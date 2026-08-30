@@ -1,0 +1,1362 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spieliwer</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#1a2340;overflow:hidden}
+  body{display:flex;align-items:center;justify-content:center}
+  canvas{background:#87ceeb;border-radius:12px;box-shadow:0 10px 60px rgba(0,0,0,.5);
+         image-rendering:auto;max-width:100vw;max-height:100vh}
+</style>
+</head>
+<body>
+<canvas id="game" width="960" height="540"></canvas>
+<script>
+'use strict';
+// ============================================================
+//  SPIELIWER — ein Spiel von Linus & Papa
+//  Welt 1: Himmelsinseln  ->  Paraglider  ->  Welt 2: Waldland
+// ============================================================
+
+const cvs = document.getElementById('game');
+const ctx = cvs.getContext('2d');
+const W = 960, H = 540;
+
+function fitCanvas(){
+  const s = Math.min(innerWidth / W, innerHeight / H);
+  cvs.style.width  = Math.floor(W * s) + 'px';
+  cvs.style.height = Math.floor(H * s) + 'px';
+}
+addEventListener('resize', fitCanvas); fitCanvas();
+
+// ---------- Helpers ----------
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp  = (a, b, t) => a + (b - a) * t;
+const overlap = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+const rnd = (a, b) => a + Math.random() * (b - a);
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+
+// ---------- Audio ----------
+let AC = null;
+function initAudio(){
+  if (!AC){ try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch(e){} }
+  if (AC && AC.state === 'suspended') AC.resume();
+}
+function tone(freq, dur, type, vol, delay, slideTo){
+  if (!AC) return;
+  const t = AC.currentTime + (delay || 0);
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type || 'square';
+  o.frequency.setValueAtTime(freq, t);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(30, slideTo), t + dur);
+  g.gain.setValueAtTime(vol || 0.12, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g); g.connect(AC.destination);
+  o.start(t); o.stop(t + dur + 0.05);
+}
+function sfx(name){
+  switch(name){
+    case 'jump':    tone(300, .18, 'square', .10, 0, 600); break;
+    case 'swing':   tone(700, .09, 'sawtooth', .07, 0, 300); break;
+    case 'hit':     tone(220, .12, 'square', .12, 0, 90); break;
+    case 'hurt':    tone(160, .3, 'sawtooth', .14, 0, 60); break;
+    case 'coin':    tone(880, .09, 'square', .09); tone(1320, .14, 'square', .09, .08); break;
+    case 'heart':   tone(660, .1, 'sine', .12); tone(990, .18, 'sine', .12, .1); break;
+    case 'chest':   tone(520, .1, 'triangle', .12); tone(780, .12, 'triangle', .12, .1); break;
+    case 'right':   [660,830,990,1320].forEach((f,i)=>tone(f,.14,'triangle',.12,i*.09)); break;
+    case 'wrong':   tone(220, .25, 'sawtooth', .1, 0, 150); break;
+    case 'fanfare': [523,659,784,1047,784,1047,1319].forEach((f,i)=>tone(f,.22,'triangle',.13,i*.13)); break;
+    case 'check':   tone(520,.1,'sine',.12); tone(1040,.2,'sine',.12,.1); break;
+    case 'stomp':   tone(90, .2, 'sawtooth', .16, 0, 40); break;
+    case 'roar':    tone(80, .5, 'sawtooth', .18, 0, 200); tone(60,.5,'square',.1,.05,150); break;
+    case 'block':   tone(1200,.08,'square',.08,0,800); break;
+    case 'glide':   tone(400,.6,'sine',.08,0,700); break;
+  }
+}
+function speak(text){
+  try {
+    if (!('speechSynthesis' in window)) return;
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'de-DE'; u.rate = 0.95; u.pitch = 1.1;
+    speechSynthesis.speak(u);
+  } catch(e){}
+}
+
+// ---------- Input (Tastatur + Gamepad) ----------
+const keys = {}, pressedKeys = {};
+addEventListener('keydown', e => {
+  if (!e.repeat) pressedKeys[e.code] = true;
+  keys[e.code] = true;
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
+  initAudio();
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+
+let padConnected = false, padName = '';
+let prevPadButtons = [];
+addEventListener('gamepadconnected', e => { padConnected = true; padName = e.gamepad.id; initAudio(); });
+addEventListener('gamepaddisconnected', () => { padConnected = false; });
+
+const inp = {};
+function pollInput(){
+  let left  = keys['ArrowLeft']  || keys['KeyA'];
+  let right = keys['ArrowRight'] || keys['KeyD'];
+  let up    = keys['ArrowUp']    || keys['KeyW'];
+  let down  = keys['ArrowDown']  || keys['KeyS'];
+  let jump  = keys['Space'] || keys['ArrowUp'] || keys['KeyW'];
+  let atk   = keys['KeyX'] || keys['KeyK'] || keys['KeyF'];
+
+  let leftP  = pressedKeys['ArrowLeft'] || pressedKeys['KeyA'];
+  let rightP = pressedKeys['ArrowRight'] || pressedKeys['KeyD'];
+  let upP    = pressedKeys['ArrowUp'] || pressedKeys['KeyW'];
+  let downP  = pressedKeys['ArrowDown'] || pressedKeys['KeyS'];
+  let jumpP  = pressedKeys['Space'] || pressedKeys['ArrowUp'] || pressedKeys['KeyW'];
+  let atkP   = pressedKeys['KeyX'] || pressedKeys['KeyK'] || pressedKeys['KeyF'];
+  let escP   = pressedKeys['Escape'];
+
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  for (const gp of pads){
+    if (!gp) continue;
+    padConnected = true;
+    const ax = gp.axes[0] || 0, ay = gp.axes[1] || 0;
+    const b = i => gp.buttons[i] && gp.buttons[i].pressed;
+    const bp = i => (gp.buttons[i] && gp.buttons[i].pressed) && !prevPadButtons[i];
+
+    if (ax < -0.35 || b(14)) left = true;
+    if (ax >  0.35 || b(15)) right = true;
+    if (ay < -0.5  || b(12)) up = true;
+    if (ay >  0.5  || b(13)) down = true;
+    if (b(0) || b(3)) jump = true;          // A / Y springen
+    if (b(1) || b(2)) atk = true;           // B / X schlagen
+
+    if (bp(14)) leftP = true;
+    if (bp(15)) rightP = true;
+    if (bp(12)) upP = true;
+    if (bp(13)) downP = true;
+    if (bp(0) || bp(3)) jumpP = true;
+    if (bp(1) || bp(2)) atkP = true;
+    if (bp(8) || bp(9)) escP = true;
+
+    // Stick-Flanken für Menü-Navigation
+    if (ax < -0.5 && !(inp._prevAx < -0.5)) leftP = true;
+    if (ax >  0.5 && !(inp._prevAx >  0.5)) rightP = true;
+    inp._prevAx = ax;
+
+    prevPadButtons = gp.buttons.map(x => x.pressed);
+    if (jump || atk) initAudio();
+    break;
+  }
+
+  inp.left = left; inp.right = right; inp.up = up; inp.down = down;
+  inp.jump = jump; inp.atk = atk;
+  inp.leftP = leftP; inp.rightP = rightP; inp.upP = upP; inp.downP = downP;
+  inp.jumpP = jumpP; inp.atkP = atkP; inp.escP = escP;
+  inp.confirmP = jumpP || atkP;
+}
+function clearPressed(){ for (const k in pressedKeys) delete pressedKeys[k]; }
+
+// ---------- Spielkonstanten ----------
+const GRAV = 1500, MOVE = 250, JUMPV = -620;
+const SWORDS = [
+  null,
+  { name: 'Holzschwert',    color: '#a5692a', blade: '#c8873f', dmg: 1 },
+  { name: 'Steinschwert',   color: '#7d8894', blade: '#aeb9c4', dmg: 2 },
+  { name: 'Goldschwert',    color: '#c98f00', blade: '#ffd24a', dmg: 3 },
+  { name: 'Diamantschwert', color: '#1fa8b8', blade: '#7df0ff', dmg: 4 },
+];
+
+// ---------- Globale Zustände ----------
+let state = 'title', stateT = 0;
+let world = null, worldNum = 1;
+let camX = 0, camY = 0;
+let particles = [], floaters = [];
+let banner = null;
+let quiz = null;
+let glide = null;
+let stats = { coins: 0, kills: 0 };
+let gameT = 0;
+
+const player = {
+  x: 0, y: 0, w: 32, h: 44, vx: 0, vy: 0,
+  onGround: false, facing: 1, coyote: 0, jumpBuf: 0,
+  hearts: 3, maxHearts: 3, hasShield: false, shieldCharge: 0,
+  sword: 1, invuln: 0, attackT: 0, swingId: 0, animT: 0,
+  hasParaglider: false,
+};
+
+function resetPlayerStats(){
+  player.hearts = 3; player.maxHearts = 3;
+  player.hasShield = false; player.shieldCharge = 0;
+  player.sword = 1; player.hasParaglider = false;
+  player.invuln = 0; player.attackT = 0; player.vx = 0; player.vy = 0;
+  stats = { coins: 0, kills: 0 };
+}
+
+function showBanner(text, sub, time){
+  banner = { text, sub: sub || '', t: time || 3 };
+}
+function addFloater(x, y, text, color){
+  floaters.push({ x, y, text, color: color || '#fff', t: 1.2 });
+}
+function burst(x, y, color, n, spd){
+  for (let i = 0; i < (n || 10); i++){
+    const a = rnd(0, Math.PI * 2), s = rnd(40, spd || 200);
+    particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 60,
+                     t: rnd(.4, .9), color, size: rnd(3, 7) });
+  }
+}
+
+// ---------- Welten ----------
+function plat(x, y, w){ return { x, y, w, h: 26 }; }
+
+function buildWorld1(){
+  const platforms = [
+    plat(40, 360, 260), plat(380, 340, 160), plat(620, 300, 140),
+    plat(830, 360, 200), plat(1110, 320, 140), plat(1320, 260, 120),
+    plat(1520, 330, 180), plat(1780, 300, 140), plat(2000, 360, 220),
+    plat(2300, 320, 130), plat(2510, 270, 120), plat(2700, 340, 180),
+    plat(2950, 300, 150), plat(3180, 350, 160), plat(3420, 320, 140),
+    plat(3640, 340, 620),
+  ];
+  const slimeOn = (p, off) => ({ type: 'slime', plat: p, x: p.x + off, y: p.y - 26,
+    w: 36, h: 26, hp: 1, maxHp: 1, dmg: 1, dir: 1, spd: 40, t: rnd(0, 9), swingHit: -1, flash: 0 });
+  const flyer = (x, y) => ({ type: 'flyer', ax: x, ay: y, x, y, w: 34, h: 28,
+    hp: 1, maxHp: 1, dmg: 1, t: rnd(0, 9), range: 110, swingHit: -1, flash: 0 });
+  const enemies = [
+    slimeOn(platforms[1], 40), slimeOn(platforms[3], 60), slimeOn(platforms[4], 30),
+    slimeOn(platforms[8], 30), slimeOn(platforms[8], 130), slimeOn(platforms[9], 30),
+    slimeOn(platforms[12], 40), slimeOn(platforms[14], 30),
+    flyer(1260, 220), flyer(2430, 210), flyer(3350, 240),
+  ];
+  const arenaP = platforms[15];
+  const boss = {
+    x: 3950, y: arenaP.y - 90, w: 110, h: 90, vx: 0, vy: 0,
+    hp: 10, maxHp: 10, groundY: arenaP.y, minX: arenaP.x + 10, maxX: arenaP.x + arenaP.w - 120,
+    active: false, dead: false, onGround: true, jumpCd: 1.2, t: 0, flash: 0, swingHit: -1, dmg: 1,
+  };
+  const chests = [
+    { x: 950, y: 326, w: 40, h: 34, task: 'count', reward: 'sword2', open: false, cd: 0 },
+    { x: 2140, y: 326, w: 40, h: 34, task: 'add', reward: 'shield', open: false, cd: 0 },
+    { x: 3280, y: 316, w: 40, h: 34, task: 'letter', reward: 'sword3', open: false, cd: 0 },
+  ];
+  const flags = [
+    { x: 1560, y: 330, active: false }, { x: 2760, y: 340, active: false },
+  ];
+  const decor = [];
+  for (let i = 0; i < 14; i++) decor.push({ kind: 'cloud', x: rnd(0, 4400), y: rnd(30, 480), s: rnd(.6, 1.6), spd: rnd(6, 18) });
+  return {
+    num: 1, name: 'Welt 1 · Himmelsinseln', w: 4400, top: -100, killY: 800,
+    platforms, enemies, chests, flags, boss, decor,
+    pickups: [], coins: [],
+    spawn: { x: 90, y: 280 }, checkpoint: { x: 90, y: 280 },
+    door: null, theme: 'sky',
+  };
+}
+
+function buildWorld2(){
+  const platforms = [
+    plat(0, 460, 520), plat(600, 460, 320), plat(990, 420, 220),
+    plat(1290, 460, 430), plat(1800, 400, 220), plat(2100, 460, 520),
+    plat(2700, 430, 260), plat(3040, 460, 340),
+    // Aufstieg zur besseren Welt (Bohnenranken-Turm)
+    plat(3400, 370, 130), plat(3570, 290, 130), plat(3400, 210, 130),
+    plat(3570, 130, 130), plat(3400, 50, 130), plat(3570, -30, 130),
+    plat(3390, -110, 140), plat(3480, -200, 280),
+  ];
+  const slimeOn = (p, off) => ({ type: 'slime', plat: p, x: p.x + off, y: p.y - 30,
+    w: 40, h: 30, hp: 2, maxHp: 2, dmg: 1, dir: 1, spd: 62, t: rnd(0, 9), swingHit: -1, flash: 0 });
+  const flyer = (x, y) => ({ type: 'flyer', ax: x, ay: y, x, y, w: 36, h: 30,
+    hp: 2, maxHp: 2, dmg: 1, t: rnd(0, 9), range: 120, swingHit: -1, flash: 0 });
+  const enemies = [
+    slimeOn(platforms[1], 60), slimeOn(platforms[3], 60), slimeOn(platforms[3], 260),
+    slimeOn(platforms[5], 80), slimeOn(platforms[5], 300), slimeOn(platforms[6], 60),
+    slimeOn(platforms[7], 100),
+    flyer(900, 360), flyer(1950, 300), flyer(2600, 340),
+    flyer(3480, 200), flyer(3480, -20),
+  ];
+  const chests = [
+    { x: 1420, y: 426, w: 40, h: 34, task: 'add2', reward: 'sword4', open: false, cd: 0 },
+    { x: 2300, y: 426, w: 40, h: 34, task: 'count2', reward: 'heartup', open: false, cd: 0 },
+  ];
+  const flags = [
+    { x: 1060, y: 420, active: false }, { x: 2200, y: 460, active: false },
+    { x: 3120, y: 460, active: false },
+  ];
+  const decor = [];
+  for (let i = 0; i < 12; i++) decor.push({ kind: 'tree', x: rnd(0, 3400), y: 0, s: rnd(.7, 1.3) });
+  for (let i = 0; i < 8; i++) decor.push({ kind: 'cloud', x: rnd(0, 3900), y: rnd(-300, 120), s: rnd(.6, 1.2), spd: rnd(6, 14) });
+  return {
+    num: 2, name: 'Welt 2 · Waldland', w: 3900, top: -420, killY: 720,
+    platforms, enemies, chests, flags, boss: null, decor,
+    pickups: [], coins: [],
+    spawn: { x: 80, y: 380 }, checkpoint: { x: 80, y: 380 },
+    door: { x: 3580, y: -290, w: 70, h: 90 }, theme: 'forest',
+  };
+}
+
+function loadWorld(n){
+  worldNum = n;
+  world = n === 1 ? buildWorld1() : buildWorld2();
+  player.x = world.spawn.x; player.y = world.spawn.y;
+  player.vx = 0; player.vy = 0; player.invuln = 1;
+  camX = clamp(player.x - W / 2, 0, world.w - W);
+  camY = clamp(player.y - H * 0.55, world.top, world.killY - H);
+  showBanner(world.name, n === 1 ? 'Finde den Paraglider!' : 'Klettere hoch zur besseren Welt!', 3.5);
+  speak(n === 1 ? 'Welt eins: Die Himmelsinseln! Finde den Paraglider!'
+                : 'Welt zwei: Das Waldland! Klettere hoch zur besseren Welt!');
+}
+
+// ---------- Quiz (Lern-Aufgaben) ----------
+const COUNT_ITEMS = [['🍎','Äpfel'],['🍓','Erdbeeren'],['⭐','Sterne'],['🎈','Luftballons'],['🐟','Fische'],['🐞','Käfer']];
+const LETTERS = 'ABDEGKLMNOPRSTW'.split('');
+
+function numOptions(correct, max){
+  const set = new Set([correct]);
+  while (set.size < 3){
+    let v = correct + Math.round(rnd(-2, 2));
+    if (v >= 1 && v <= max) set.add(v);
+  }
+  const arr = [...set].sort(() => Math.random() - .5);
+  return { options: arr.map(String), correct: arr.indexOf(correct + '') };
+}
+
+function makeTask(type){
+  if (type === 'count' || type === 'count2'){
+    const hard = type === 'count2';
+    const n = Math.floor(rnd(hard ? 5 : 3, hard ? 10 : 7));
+    const [emo, name] = pick(COUNT_ITEMS);
+    const o = numOptions(n, hard ? 10 : 8);
+    return { kind: 'count', emo, n,
+      question: 'Wie viele ' + name + '?',
+      spoken: 'Wie viele ' + name + ' siehst du? Wähle die richtige Zahl!',
+      options: o.options, correct: o.correct };
+  }
+  if (type === 'add' || type === 'add2'){
+    const hard = type === 'add2';
+    const a = Math.floor(rnd(1, hard ? 6 : 4)), b = Math.floor(rnd(1, hard ? 6 : 4));
+    const [emo] = pick(COUNT_ITEMS);
+    const o = numOptions(a + b, hard ? 11 : 8);
+    return { kind: 'add', emo, a, b,
+      question: a + ' + ' + b + ' = ?',
+      spoken: 'Wie viel ist ' + a + ' plus ' + b + '?',
+      options: o.options, correct: o.correct };
+  }
+  // letter
+  const target = pick(LETTERS);
+  const set = new Set([target]);
+  while (set.size < 3) set.add(pick(LETTERS));
+  const arr = [...set].sort(() => Math.random() - .5);
+  return { kind: 'letter', target,
+    question: 'Finde das ' + target + '!',
+    spoken: 'Finde den Buchstaben ' + target + '!',
+    options: arr, correct: arr.indexOf(target) };
+}
+
+function openChest(chest){
+  quiz = { chest, task: makeTask(chest.task), sel: 1, phase: 'ask', shake: 0, doneT: 0 };
+  state = 'quiz'; stateT = 0;
+  sfx('chest');
+  speak(quiz.task.spoken);
+}
+
+const REWARDS = {
+  sword2:  { icon: '🗡️', apply(){ player.sword = 2; }, text: 'Steinschwert!', spoken: 'Super! Du hast das Steinschwert bekommen!' },
+  sword3:  { icon: '⚔️', apply(){ player.sword = 3; }, text: 'Goldschwert!', spoken: 'Wow! Das Goldschwert gehört dir!' },
+  sword4:  { icon: '💎', apply(){ player.sword = 4; }, text: 'Diamantschwert!', spoken: 'Unglaublich! Das Diamantschwert! Das stärkste Schwert!' },
+  shield:  { icon: '🛡️', apply(){ player.hasShield = true; player.shieldCharge = 1; }, text: 'Schild!', spoken: 'Toll! Ein Schild! Er blockt einen Treffer!' },
+  heartup: { icon: '❤️', apply(){ player.maxHearts++; player.hearts = player.maxHearts; }, text: 'Extra-Herz!', spoken: 'Klasse! Ein Extraherz für dich!' },
+};
+
+function updateQuiz(dt){
+  quiz.shake = Math.max(0, quiz.shake - dt * 3);
+  if (quiz.phase === 'correct'){
+    quiz.doneT += dt;
+    if (quiz.doneT > 2.2){
+      quiz.chest.open = true;
+      const r = REWARDS[quiz.chest.reward];
+      r.apply();
+      if (player.hasShield) player.shieldCharge = 1;
+      showBanner(r.icon + ' ' + r.text, '', 2.5);
+      burst(player.x + 16, player.y, '#ffd24a', 20, 260);
+      quiz = null; state = 'play';
+    }
+    return;
+  }
+  if (inp.leftP)  { quiz.sel = (quiz.sel + 2) % 3; sfx('swing'); }
+  if (inp.rightP) { quiz.sel = (quiz.sel + 1) % 3; sfx('swing'); }
+  if (inp.escP){ quiz.chest.cd = 1.2; quiz = null; state = 'play'; return; }
+  if (inp.confirmP){
+    if (quiz.sel === quiz.task.correct){
+      quiz.phase = 'correct'; quiz.doneT = 0;
+      sfx('right');
+      speak(REWARDS[quiz.chest.reward].spoken);
+    } else {
+      quiz.shake = 1; sfx('wrong');
+      speak('Fast! Probier es noch einmal!');
+    }
+  }
+}
+
+// ---------- Spieler ----------
+function hurtPlayer(dmg, fromX){
+  if (player.invuln > 0) return;
+  const dir = player.x + player.w / 2 < fromX ? -1 : 1;
+  player.vx = dir * 260; player.vy = -320;
+  player.invuln = 1.3;
+  if (player.hasShield && player.shieldCharge > 0){
+    player.shieldCharge = 0;
+    sfx('block');
+    addFloater(player.x, player.y - 20, '🛡️ Block!', '#7fd0ff');
+    return;
+  }
+  player.hearts -= dmg;
+  sfx('hurt');
+  burst(player.x + 16, player.y + 20, '#ff5566', 12, 220);
+  if (player.hearts <= 0){
+    player.hearts = 0;
+    state = 'dead'; stateT = 0;
+    speak('Ohje! Versuch es gleich nochmal!');
+  }
+}
+
+function respawn(){
+  player.x = world.checkpoint.x; player.y = world.checkpoint.y - 60;
+  player.vx = 0; player.vy = 0;
+  player.hearts = player.maxHearts;
+  if (player.hasShield) player.shieldCharge = 1;
+  player.invuln = 2;
+}
+
+function updatePlayer(dt){
+  const p = player;
+  p.animT += dt;
+  p.invuln = Math.max(0, p.invuln - dt);
+  p.attackT = Math.max(0, p.attackT - dt);
+  p.coyote = Math.max(0, p.coyote - dt);
+  p.jumpBuf = Math.max(0, p.jumpBuf - dt);
+
+  // Laufen
+  const wish = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
+  if (wish !== 0){ p.facing = wish; }
+  p.vx = lerp(p.vx, wish * MOVE, 1 - Math.pow(0.0005, dt));
+
+  // Springen (mit Coyote-Zeit + Puffer, kindgerecht großzügig)
+  if (inp.jumpP) p.jumpBuf = 0.15;
+  if (p.jumpBuf > 0 && (p.onGround || p.coyote > 0)){
+    p.vy = JUMPV; p.onGround = false; p.coyote = 0; p.jumpBuf = 0;
+    sfx('jump');
+  }
+  if (!inp.jump && p.vy < -200) p.vy = -200; // variable Sprunghöhe
+
+  // Schlagen
+  if (inp.atkP && p.attackT <= 0){
+    p.attackT = 0.26; p.swingId++;
+    sfx('swing');
+  }
+
+  // Physik
+  p.vy += GRAV * dt;
+  p.vy = Math.min(p.vy, 900);
+  p.x += p.vx * dt;
+  p.x = clamp(p.x, 0, world.w - p.w);
+
+  const prevBottom = p.y + p.h;
+  p.y += p.vy * dt;
+
+  const wasGround = p.onGround;
+  p.onGround = false;
+  if (p.vy >= 0){
+    for (const pl of world.platforms){
+      if (p.x + p.w > pl.x + 4 && p.x < pl.x + pl.w - 4 &&
+          prevBottom <= pl.y + 8 && p.y + p.h >= pl.y && p.y + p.h <= pl.y + pl.h + 18){
+        p.y = pl.y - p.h; p.vy = 0; p.onGround = true;
+        break;
+      }
+    }
+  }
+  if (wasGround && !p.onGround) p.coyote = 0.12;
+
+  // Runterfallen
+  if (p.y > world.killY){
+    sfx('hurt');
+    player.invuln = 0;
+    hurtPlayer(1, p.x);
+    if (state !== 'dead') respawn();
+  }
+}
+
+function swordHitbox(){
+  const p = player;
+  if (p.attackT < 0.08 || p.attackT > 0.22) return null;
+  return { x: p.facing > 0 ? p.x + p.w - 4 : p.x - 42, y: p.y - 4, w: 46, h: p.h + 8 };
+}
+
+// ---------- Gegner ----------
+function dropLoot(x, y){
+  const n = 1 + (Math.random() < 0.4 ? 1 : 0);
+  for (let i = 0; i < n; i++){
+    world.coins.push({ x: x + rnd(-10, 10), y, vx: rnd(-80, 80), vy: rnd(-320, -180), t: 8, grounded: false });
+  }
+  if (Math.random() < 0.22){
+    world.pickups.push({ type: 'heart', x, y: y - 10, w: 26, h: 24, t: 10 });
+  }
+}
+
+function killEnemy(e){
+  e.hp = 0;
+  stats.kills++;
+  burst(e.x + e.w / 2, e.y + e.h / 2, e.type === 'flyer' ? '#c9a6ff' : '#79d84f', 14, 240);
+  addFloater(e.x, e.y - 10, '+⭐', '#ffd24a');
+  dropLoot(e.x + e.w / 2, e.y);
+  sfx('hit');
+}
+
+function updateEnemies(dt){
+  const hb = swordHitbox();
+  for (const e of world.enemies){
+    if (e.hp <= 0) continue;
+    e.t += dt;
+    e.flash = Math.max(0, e.flash - dt);
+    if (e.type === 'slime'){
+      e.x += e.dir * e.spd * dt;
+      if (e.x < e.plat.x + 4){ e.x = e.plat.x + 4; e.dir = 1; }
+      if (e.x + e.w > e.plat.x + e.plat.w - 4){ e.x = e.plat.x + e.plat.w - 4 - e.w; e.dir = -1; }
+      e.y = e.plat.y - e.h + Math.sin(e.t * 9) * 2;
+    } else {
+      e.x = e.ax + Math.sin(e.t * 0.9) * e.range;
+      e.y = e.ay + Math.sin(e.t * 2.2) * 26;
+    }
+    // Schwerttreffer
+    if (hb && e.swingHit !== player.swingId && overlap(hb, e)){
+      e.swingHit = player.swingId;
+      e.hp -= SWORDS[player.sword].dmg;
+      e.flash = 0.15;
+      e.x += player.facing * 18;
+      if (e.hp <= 0) killEnemy(e); else sfx('hit');
+    }
+    // Spieler berührt
+    if (e.hp > 0 && overlap(e, player)) hurtPlayer(e.dmg, e.x + e.w / 2);
+  }
+  world.enemies = world.enemies.filter(e => e.hp > 0);
+}
+
+function updateBoss(dt){
+  const b = world.boss;
+  if (!b || b.dead) return;
+  b.t += dt;
+  b.flash = Math.max(0, b.flash - dt);
+
+  if (!b.active){
+    if (Math.abs(player.x - b.x) < 520){
+      b.active = true;
+      showBanner('⚠️ Der Wolkenkönig!', 'Besiege ihn für den Paraglider!', 3.5);
+      speak('Achtung! Der Wolkenkönig! Besiege ihn und du bekommst den Paraglider!');
+      sfx('roar');
+    }
+    return;
+  }
+
+  b.vy += GRAV * 0.8 * dt;
+  b.y += b.vy * dt;
+  if (b.y + b.h >= b.groundY){
+    if (!b.onGround){ burst(b.x + b.w / 2, b.groundY, '#dfe9f5', 12, 180); sfx('stomp'); }
+    b.y = b.groundY - b.h; b.vy = 0; b.onGround = true;
+  }
+  b.jumpCd -= dt;
+  if (b.onGround && b.jumpCd <= 0){
+    const enraged = b.hp <= 4;
+    const dir = Math.sign(player.x - b.x) || 1;
+    b.vx = dir * (enraged ? 190 : 130);
+    b.vy = -540; b.onGround = false;
+    b.jumpCd = enraged ? 1.0 : 1.7;
+  }
+  if (!b.onGround) b.x += b.vx * dt;
+  b.x = clamp(b.x, b.minX, b.maxX);
+
+  const hb = swordHitbox();
+  if (hb && b.swingHit !== player.swingId && overlap(hb, b)){
+    b.swingHit = player.swingId;
+    b.hp -= SWORDS[player.sword].dmg;
+    b.flash = 0.18;
+    sfx('hit');
+    burst(player.x + player.facing * 40, b.y + b.h / 2, '#fff', 8, 180);
+    if (b.hp <= 0){
+      b.dead = true;
+      stats.kills++;
+      burst(b.x + b.w / 2, b.y + b.h / 2, '#dfe9f5', 40, 340);
+      sfx('fanfare');
+      world.pickups.push({ type: 'paraglider', x: b.x + b.w / 2 - 24, y: b.groundY - 70, w: 48, h: 44, t: 999 });
+      showBanner('🎉 Wolkenkönig besiegt!', 'Hol dir den Paraglider!', 4);
+      speak('Jaaa! Du hast den Wolkenkönig besiegt! Hol dir den Paraglider!');
+    }
+  }
+  if (!b.dead && overlap(b, player)) hurtPlayer(b.dmg, b.x + b.w / 2);
+}
+
+// ---------- Münzen & Pickups ----------
+function updateCoins(dt){
+  for (const c of world.coins){
+    c.t -= dt;
+    if (!c.grounded){
+      c.vy += GRAV * dt; c.x += c.vx * dt; c.y += c.vy * dt;
+      for (const pl of world.platforms){
+        if (c.vy > 0 && c.x > pl.x && c.x < pl.x + pl.w && c.y > pl.y - 6 && c.y < pl.y + 20){
+          c.y = pl.y - 6; c.grounded = true;
+        }
+      }
+      if (c.y > world.killY) c.t = 0;
+    }
+    if (Math.abs(c.x - (player.x + 16)) < 30 && Math.abs(c.y - (player.y + 22)) < 36){
+      c.t = 0; stats.coins++; sfx('coin');
+      addFloater(c.x - 10, c.y - 16, '+1', '#ffd24a');
+    }
+  }
+  world.coins = world.coins.filter(c => c.t > 0);
+
+  for (const pu of world.pickups){
+    if (pu.type === 'heart') pu.t -= dt;
+    if (!overlap(pu, player)) continue;
+    if (pu.type === 'heart'){
+      if (player.hearts < player.maxHearts){
+        player.hearts++; pu.t = 0; sfx('heart');
+        addFloater(pu.x, pu.y - 14, '+❤️', '#ff6b81');
+      }
+    } else if (pu.type === 'paraglider'){
+      pu.t = 0;
+      player.hasParaglider = true;
+      player.maxHearts++; player.hearts = player.maxHearts;
+      sfx('fanfare');
+      speak('Der Paraglider gehört dir! Und ein Extraherz! Jetzt geht es hinunter in Welt zwei! Festhalten!');
+      showBanner('🪂 Paraglider + ❤️ Extra-Herz!', 'Ab in Welt 2!', 3);
+      startGlide();
+    }
+  }
+  world.pickups = world.pickups.filter(p => p.t > 0);
+}
+
+// ---------- Checkpoints, Truhen, Tür ----------
+function updateWorldObjects(dt){
+  for (const f of world.flags){
+    if (!f.active && Math.abs(player.x - f.x) < 40 && Math.abs(player.y + player.h - f.y) < 60){
+      f.active = true;
+      world.checkpoint = { x: f.x, y: f.y };
+      if (player.hasShield && player.shieldCharge < 1){
+        player.shieldCharge = 1;
+        addFloater(f.x, f.y - 80, '🛡️ aufgeladen!', '#7fd0ff');
+      }
+      sfx('check');
+      addFloater(f.x - 30, f.y - 100, '✅ Speicherpunkt!', '#7be07b');
+    }
+  }
+  for (const c of world.chests){
+    c.cd = Math.max(0, c.cd - dt);
+    if (!c.open && c.cd <= 0 && overlap(c, player)){
+      openChest(c);
+      return;
+    }
+  }
+  if (world.door && overlap(world.door, player)){
+    state = 'win'; stateT = 0; banner = null;
+    sfx('fanfare');
+    speak('Fantastisch! Du hast beide Welten geschafft! Du bist ein echter Held!');
+  }
+}
+
+// ---------- Paraglider-Flug ----------
+function startGlide(){
+  glide = { x: W / 2, gy: 0, endY: 2800, t: 0, coins: [], clouds: [], collected: 0 };
+  for (let i = 0; i < 36; i++){
+    glide.coins.push({ x: rnd(120, W - 120), gy: rnd(250, 2650), got: false });
+  }
+  for (let i = 0; i < 26; i++){
+    glide.clouds.push({ x: rnd(-50, W + 50), gy: rnd(0, 2900), s: rnd(.5, 1.5) });
+  }
+  state = 'glide'; stateT = 0;
+  sfx('glide');
+}
+
+function updateGlide(dt){
+  glide.t += dt;
+  glide.gy += 150 * dt;
+  const wish = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
+  glide.x = clamp(glide.x + wish * 260 * dt, 60, W - 60);
+  if (wish !== 0) player.facing = wish;
+
+  for (const c of glide.coins){
+    if (c.got) continue;
+    const sy = 170 + (c.gy - glide.gy);
+    if (Math.abs(c.x - glide.x) < 42 && Math.abs(sy - 190) < 44){
+      c.got = true; glide.collected++; stats.coins++; sfx('coin');
+    }
+  }
+  if (glide.gy >= glide.endY){
+    glide = null;
+    loadWorld(2);
+    state = 'play';
+  }
+}
+
+// ---------- Partikel & Texte ----------
+function updateFx(dt){
+  for (const p of particles){
+    p.t -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 500 * dt;
+  }
+  particles = particles.filter(p => p.t > 0);
+  for (const f of floaters){ f.t -= dt; f.y -= 40 * dt; }
+  floaters = floaters.filter(f => f.t > 0);
+  if (banner){ banner.t -= dt; if (banner.t <= 0) banner = null; }
+}
+
+// ============================================================
+//  RENDERING
+// ============================================================
+function font(s, weight){
+  ctx.font = (weight || 'bold') + ' ' + s + 'px "Comic Sans MS","Segoe UI",sans-serif';
+}
+function text(str, x, y, size, color, align){
+  font(size);
+  ctx.textAlign = align || 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = color || '#fff';
+  ctx.fillText(str, x, y);
+}
+function textOutline(str, x, y, size, color, outline){
+  font(size);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = Math.max(3, size / 8); ctx.strokeStyle = outline || 'rgba(0,0,0,.45)';
+  ctx.strokeText(str, x, y);
+  ctx.fillStyle = color || '#fff';
+  ctx.fillText(str, x, y);
+}
+function rrect(x, y, w, h, r){
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function drawCloudShape(x, y, s){
+  ctx.beginPath();
+  ctx.arc(x, y, 26 * s, 0, 7);
+  ctx.arc(x + 26 * s, y + 6 * s, 20 * s, 0, 7);
+  ctx.arc(x - 26 * s, y + 8 * s, 18 * s, 0, 7);
+  ctx.arc(x + 4 * s, y - 12 * s, 18 * s, 0, 7);
+  ctx.fill();
+}
+
+function drawBackground(){
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  if (world.theme === 'sky'){
+    g.addColorStop(0, '#5db9f0'); g.addColorStop(0.7, '#a8dcf8'); g.addColorStop(1, '#e8f7ff');
+  } else {
+    const climb = clamp((300 - player.y) / 700, 0, 1); // höher = heller
+    g.addColorStop(0, lerpColor('#7fc4e8', '#ffd9a0', climb));
+    g.addColorStop(1, lerpColor('#cfeebc', '#ffeed0', climb));
+  }
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  // Sonne
+  ctx.fillStyle = 'rgba(255,235,130,.9)';
+  ctx.beginPath(); ctx.arc(830 - camX * 0.05, 80 - camY * 0.05, 42, 0, 7); ctx.fill();
+
+  // Parallax-Deko
+  for (const d of world.decor){
+    if (d.kind === 'cloud'){
+      d.x -= d.spd * 0.016;
+      if (d.x < -120) d.x = world.w + 100;
+      const sx = d.x - camX * 0.4, sy = d.y - camY * 0.3;
+      if (sx > -150 && sx < W + 150){
+        ctx.fillStyle = 'rgba(255,255,255,.75)';
+        drawCloudShape(sx, sy, d.s);
+      }
+    } else if (d.kind === 'tree'){
+      const sx = d.x - camX * 0.55, sy = 470 - camY * 0.55;
+      if (sx > -100 && sx < W + 100){
+        ctx.fillStyle = '#5b8f4e';
+        ctx.beginPath(); ctx.arc(sx, sy - 90 * d.s, 46 * d.s, 0, 7); ctx.fill();
+        ctx.fillStyle = '#7a5c3a';
+        ctx.fillRect(sx - 7 * d.s, sy - 60 * d.s, 14 * d.s, 70 * d.s);
+      }
+    }
+  }
+}
+function lerpColor(c1, c2, t){
+  const p = c => [parseInt(c.slice(1, 3), 16), parseInt(c.slice(3, 5), 16), parseInt(c.slice(5, 7), 16)];
+  const a = p(c1), b = p(c2);
+  return 'rgb(' + a.map((v, i) => Math.round(lerp(v, b[i], t))).join(',') + ')';
+}
+
+function drawPlatform(pl){
+  const x = pl.x - camX, y = pl.y - camY;
+  if (x + pl.w < -20 || x > W + 20) return;
+  if (world.theme === 'sky'){
+    // schwebende Insel: Fels + Grasdecke
+    ctx.fillStyle = '#8d7355';
+    rrect(x, y + 8, pl.w, pl.h + 10, 12); ctx.fill();
+    ctx.fillStyle = '#6e5940';
+    ctx.beginPath();
+    ctx.moveTo(x + 14, y + pl.h + 16);
+    ctx.lineTo(x + pl.w / 2, y + pl.h + 34);
+    ctx.lineTo(x + pl.w - 14, y + pl.h + 16);
+    ctx.fill();
+    ctx.fillStyle = '#6fc84f';
+    rrect(x - 3, y, pl.w + 6, 14, 7); ctx.fill();
+  } else {
+    ctx.fillStyle = '#8a6642';
+    rrect(x, y + 6, pl.w, pl.h + 14, 8); ctx.fill();
+    ctx.fillStyle = '#57b04a';
+    rrect(x - 3, y, pl.w + 6, 14, 7); ctx.fill();
+  }
+}
+
+function drawChest(c){
+  const x = c.x - camX, y = c.y - camY;
+  ctx.fillStyle = c.open ? '#9c7648' : '#b5854f';
+  rrect(x, y + (c.open ? 10 : 0), c.w, c.h - (c.open ? 10 : 0), 6); ctx.fill();
+  ctx.fillStyle = '#ffd24a';
+  ctx.fillRect(x, y + (c.open ? 18 : 14), c.w, 6);
+  ctx.fillRect(x + c.w / 2 - 4, y + (c.open ? 14 : 10), 8, 12);
+  if (!c.open){
+    textOutline('❓', x + c.w / 2, y - 18 + Math.sin(gameT * 3) * 4, 22);
+  }
+}
+
+function drawFlag(f){
+  const x = f.x - camX, y = f.y - camY;
+  ctx.strokeStyle = '#725c43'; ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y - 70); ctx.stroke();
+  ctx.fillStyle = f.active ? '#5fd35f' : '#d8d8d8';
+  ctx.beginPath();
+  ctx.moveTo(x + 2, y - 70); ctx.lineTo(x + 36, y - 58); ctx.lineTo(x + 2, y - 46);
+  ctx.fill();
+}
+
+function drawDoor(){
+  const d = world.door;
+  const x = d.x - camX, y = d.y - camY;
+  const colors = ['#ff5f5f', '#ffb14a', '#ffe94a', '#6fdc6f', '#5fa8ff', '#b06fff'];
+  colors.forEach((col, i) => {
+    ctx.strokeStyle = col; ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.arc(x + d.w / 2, y + d.h, d.w / 2 + 16 - i * 5, Math.PI, 0);
+    ctx.stroke();
+  });
+  ctx.fillStyle = 'rgba(255,255,255,' + (0.5 + Math.sin(gameT * 4) * 0.3) + ')';
+  rrect(x, y + 10, d.w, d.h - 10, 10); ctx.fill();
+  textOutline('✨', x + d.w / 2, y + d.h / 2, 26);
+  textOutline('Welt 3', x + d.w / 2, y - 34, 17, '#fff');
+}
+
+function drawSlime(e){
+  const x = e.x - camX, y = e.y - camY;
+  const squish = 1 + Math.sin(e.t * 9) * 0.08;
+  ctx.fillStyle = e.flash > 0 ? '#fff' : (world.theme === 'sky' ? '#79d84f' : '#e2733e');
+  ctx.beginPath();
+  ctx.ellipse(x + e.w / 2, y + e.h - e.h / 2 * squish, e.w / 2, e.h / 2 * squish, 0, 0, 7);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(x + e.w / 2 - 8, y + e.h / 2 - 2, 5, 0, 7); ctx.arc(x + e.w / 2 + 8, y + e.h / 2 - 2, 5, 0, 7); ctx.fill();
+  ctx.fillStyle = '#222';
+  const ed = e.dir * 2;
+  ctx.beginPath(); ctx.arc(x + e.w / 2 - 8 + ed, y + e.h / 2 - 2, 2.4, 0, 7); ctx.arc(x + e.w / 2 + 8 + ed, y + e.h / 2 - 2, 2.4, 0, 7); ctx.fill();
+  if (e.maxHp > 1){
+    ctx.fillStyle = '#00000055'; ctx.fillRect(x, y - 10, e.w, 5);
+    ctx.fillStyle = '#ff6b6b'; ctx.fillRect(x, y - 10, e.w * e.hp / e.maxHp, 5);
+  }
+}
+
+function drawFlyer(e){
+  const x = e.x - camX + e.w / 2, y = e.y - camY + e.h / 2;
+  const flap = Math.sin(e.t * 10) * 10;
+  ctx.fillStyle = e.flash > 0 ? '#fff' : '#a982e8';
+  ctx.beginPath();
+  ctx.moveTo(x - 26, y - flap); ctx.quadraticCurveTo(x - 14, y - 14, x, y - 4);
+  ctx.quadraticCurveTo(x + 14, y - 14, x + 26, y - flap);
+  ctx.quadraticCurveTo(x + 14, y + 6, x, y + 2);
+  ctx.quadraticCurveTo(x - 14, y + 6, x - 26, y - flap);
+  ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y + 2, 12, 0, 7); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(x - 4, y, 3.6, 0, 7); ctx.arc(x + 4, y, 3.6, 0, 7); ctx.fill();
+  ctx.fillStyle = '#222';
+  ctx.beginPath(); ctx.arc(x - 4, y + 1, 1.8, 0, 7); ctx.arc(x + 4, y + 1, 1.8, 0, 7); ctx.fill();
+  if (e.maxHp > 1){
+    ctx.fillStyle = '#00000055'; ctx.fillRect(x - e.w / 2, y - 26, e.w, 5);
+    ctx.fillStyle = '#ff6b6b'; ctx.fillRect(x - e.w / 2, y - 26, e.w * e.hp / e.maxHp, 5);
+  }
+}
+
+function drawBoss(){
+  const b = world.boss;
+  if (!b || b.dead) return;
+  const x = b.x - camX, y = b.y - camY;
+  const squish = b.onGround ? 1 + Math.sin(b.t * 6) * 0.05 : 1.1;
+  ctx.fillStyle = b.flash > 0 ? '#fff' : '#e8eef7';
+  ctx.beginPath();
+  ctx.ellipse(x + b.w / 2, y + b.h - (b.h / 2) * squish, b.w / 2, (b.h / 2) * squish, 0, 0, 7);
+  ctx.fill();
+  ctx.fillStyle = b.flash > 0 ? '#eee' : '#c8d4e8';
+  ctx.beginPath();
+  ctx.arc(x + 24, y + b.h - 60, 22, 0, 7);
+  ctx.arc(x + b.w - 24, y + b.h - 60, 22, 0, 7);
+  ctx.fill();
+  // Krone
+  ctx.fillStyle = '#ffd24a';
+  ctx.beginPath();
+  const cx0 = x + b.w / 2 - 26, cy0 = y + b.h - b.h * squish + 4;
+  ctx.moveTo(cx0, cy0); ctx.lineTo(cx0, cy0 - 22); ctx.lineTo(cx0 + 13, cy0 - 8);
+  ctx.lineTo(cx0 + 26, cy0 - 24); ctx.lineTo(cx0 + 39, cy0 - 8); ctx.lineTo(cx0 + 52, cy0 - 22);
+  ctx.lineTo(cx0 + 52, cy0); ctx.fill();
+  // böse Augen
+  ctx.fillStyle = '#33415c';
+  ctx.beginPath();
+  ctx.arc(x + b.w / 2 - 18, y + 40, 7, 0, 7);
+  ctx.arc(x + b.w / 2 + 18, y + 40, 7, 0, 7);
+  ctx.fill();
+  ctx.strokeStyle = '#33415c'; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(x + b.w / 2 - 30, y + 26); ctx.lineTo(x + b.w / 2 - 8, y + 34); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + b.w / 2 + 30, y + 26); ctx.lineTo(x + b.w / 2 + 8, y + 34); ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(x + b.w / 2, y + 62, 12, 0.2, Math.PI - 0.2); ctx.stroke();
+
+  if (b.active){
+    const bw = 300, bx = W / 2 - bw / 2;
+    ctx.fillStyle = 'rgba(0,0,0,.4)'; rrect(bx - 4, 46, bw + 8, 22, 10); ctx.fill();
+    ctx.fillStyle = '#ff5b6e'; rrect(bx, 50, bw * b.hp / b.maxHp, 14, 7); ctx.fill();
+    textOutline('👑 Wolkenkönig', W / 2, 34, 17);
+  }
+}
+
+function drawSword(level, len){
+  // gezeichnet ab Griff bei (0,0) nach oben
+  const s = SWORDS[level];
+  ctx.fillStyle = '#6b4a2b';
+  ctx.fillRect(-3, -2, 6, 12);
+  ctx.fillStyle = s.color;
+  ctx.fillRect(-9, -6, 18, 5);
+  ctx.fillStyle = s.blade;
+  ctx.beginPath();
+  ctx.moveTo(-4, -6); ctx.lineTo(4, -6); ctx.lineTo(4, -len); ctx.lineTo(0, -len - 8); ctx.lineTo(-4, -len);
+  ctx.closePath(); ctx.fill();
+}
+
+function drawPlayer(){
+  const p = player;
+  const x = p.x - camX, y = p.y - camY;
+  ctx.save();
+  if (p.invuln > 0 && Math.floor(p.invuln * 14) % 2 === 0) ctx.globalAlpha = 0.35;
+  ctx.translate(x + p.w / 2, y + p.h);
+  const walk = Math.abs(p.vx) > 20 && p.onGround ? Math.sin(p.animT * 12) * 3 : 0;
+
+  // Beine
+  ctx.fillStyle = '#3d5a99';
+  ctx.fillRect(-11, -14 + walk, 9, 14 - walk);
+  ctx.fillRect(2, -14 - walk, 9, 14 + walk);
+  // Körper (rote Tunika)
+  ctx.fillStyle = '#d94f4f';
+  rrect(-13, -34, 26, 22, 6); ctx.fill();
+  // Gürtel
+  ctx.fillStyle = '#7a4a22'; ctx.fillRect(-13, -17, 26, 4);
+  // Kopf
+  ctx.fillStyle = '#ffd9b0';
+  ctx.beginPath(); ctx.arc(0, -41, 11, 0, 7); ctx.fill();
+  // Haare
+  ctx.fillStyle = '#7a4a22';
+  ctx.beginPath(); ctx.arc(0, -45, 11, Math.PI, 0); ctx.fill();
+  // Augen
+  ctx.fillStyle = '#222';
+  ctx.beginPath(); ctx.arc(p.facing * 4, -41, 1.8, 0, 7); ctx.arc(p.facing * 8, -41, 1.8, 0, 7); ctx.fill();
+  // Schild auf dem Rücken
+  if (p.hasShield){
+    ctx.fillStyle = p.shieldCharge > 0 ? '#5fa8ff' : '#8899aa';
+    ctx.beginPath(); ctx.arc(-p.facing * 13, -25, 9, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#ffd24a'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(-p.facing * 13, -25, 9, 0, 7); ctx.stroke();
+  }
+  // Schwert
+  ctx.save();
+  ctx.translate(p.facing * 13, -22);
+  ctx.scale(p.facing, 1);
+  let ang;
+  if (p.attackT > 0){
+    const k = 1 - p.attackT / 0.26;      // 0 -> 1 über den Schwung
+    ang = lerp(-2.1, 0.9, Math.min(1, k * 1.6));
+  } else {
+    ang = 0.6;
+  }
+  ctx.rotate(ang);
+  drawSword(p.sword, 26 + p.sword * 3);
+  ctx.restore();
+  ctx.restore();
+}
+
+function drawPickups(){
+  for (const pu of world.pickups){
+    const x = pu.x - camX, y = pu.y - camY + Math.sin(gameT * 3) * 5;
+    if (pu.type === 'heart'){
+      textOutline('❤️', x + 13, y + 12, 24);
+    } else if (pu.type === 'paraglider'){
+      ctx.fillStyle = 'rgba(255,255,160,' + (0.3 + Math.sin(gameT * 5) * 0.2) + ')';
+      ctx.beginPath(); ctx.arc(x + 24, y + 22, 44, 0, 7); ctx.fill();
+      textOutline('🪂', x + 24, y + 22, 40);
+    }
+  }
+  for (const c of world.coins){
+    const x = c.x - camX, y = c.y - camY;
+    const w = Math.abs(Math.sin(gameT * 5 + c.x)) * 8 + 2;
+    ctx.fillStyle = '#ffd24a';
+    ctx.beginPath(); ctx.ellipse(x, y, w, 9, 0, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#c98f00'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(x, y, w, 9, 0, 0, 7); ctx.stroke();
+  }
+}
+
+function drawFx(){
+  for (const p of particles){
+    ctx.globalAlpha = clamp(p.t * 2, 0, 1);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x - camX - p.size / 2, p.y - camY - p.size / 2, p.size, p.size);
+  }
+  ctx.globalAlpha = 1;
+  for (const f of floaters){
+    ctx.globalAlpha = clamp(f.t, 0, 1);
+    textOutline(f.text, f.x - camX, f.y - camY, 17, f.color);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawHUD(){
+  // Herzen
+  for (let i = 0; i < player.maxHearts; i++){
+    textOutline(i < player.hearts ? '❤️' : '🖤', 30 + i * 30, 28, 22);
+  }
+  if (player.hasShield){
+    textOutline(player.shieldCharge > 0 ? '🛡️' : '⬜', 30 + player.maxHearts * 30 + 10, 28, 22);
+  }
+  // Schwert-Anzeige
+  const s = SWORDS[player.sword];
+  ctx.fillStyle = 'rgba(0,0,0,.3)';
+  rrect(14, 46, 170, 30, 10); ctx.fill();
+  ctx.save();
+  ctx.translate(36, 68); ctx.rotate(0.8); drawSword(player.sword, 20); ctx.restore();
+  text(s.name, 52, 61, 14, '#fff', 'left');
+  // Münzen
+  textOutline('🪙 ' + stats.coins, W - 60, 28, 20);
+  // Weltname
+  text(world.name, W / 2, 16, 13, 'rgba(255,255,255,.9)');
+}
+
+function drawBanner(){
+  if (!banner) return;
+  const a = clamp(banner.t, 0, 1);
+  ctx.globalAlpha = a;
+  ctx.fillStyle = 'rgba(20,30,60,.75)';
+  const bw = 560;
+  rrect(W / 2 - bw / 2, 88, bw, banner.sub ? 74 : 50, 16); ctx.fill();
+  textOutline(banner.text, W / 2, 114, 26);
+  if (banner.sub) text(banner.sub, W / 2, 144, 16, '#ffd24a');
+  ctx.globalAlpha = 1;
+}
+
+// ---------- Quiz zeichnen ----------
+function drawQuiz(){
+  ctx.fillStyle = 'rgba(10,20,40,.55)';
+  ctx.fillRect(0, 0, W, H);
+  const q = quiz.task;
+  const cw = 720, ch = 420;
+  let cx = W / 2 - cw / 2, cy = H / 2 - ch / 2;
+  if (quiz.shake > 0) cx += Math.sin(quiz.shake * 40) * 8 * quiz.shake;
+
+  ctx.fillStyle = '#fffdf5';
+  rrect(cx, cy, cw, ch, 24); ctx.fill();
+  ctx.strokeStyle = '#ffb14a'; ctx.lineWidth = 6;
+  rrect(cx, cy, cw, ch, 24); ctx.stroke();
+
+  text('🔑 Truhen-Rätsel', W / 2, cy + 36, 20, '#e2731e');
+  text(q.question, W / 2, cy + 78, 30, '#33415c');
+
+  // Aufgabendarstellung
+  if (q.kind === 'count'){
+    const perRow = Math.min(q.n, 5);
+    const rows = Math.ceil(q.n / perRow);
+    for (let i = 0; i < q.n; i++){
+      const r = Math.floor(i / perRow), col = i % perRow;
+      const inRow = Math.min(perRow, q.n - r * perRow);
+      const ix = W / 2 - (inRow - 1) * 33 + col * 66;
+      text(q.emo, ix, cy + 140 + r * 62 + Math.sin(gameT * 3 + i) * 3, 40);
+    }
+  } else if (q.kind === 'add'){
+    const drawGroup = (n, baseX) => {
+      for (let i = 0; i < n; i++) text(q.emo, baseX + (i % 3) * 46 - 46, cy + 140 + Math.floor(i / 3) * 50, 34);
+    };
+    drawGroup(q.a, W / 2 - 190);
+    text('➕', W / 2, cy + 155, 36);
+    drawGroup(q.b, W / 2 + 190);
+  } else {
+    text('Welcher Buchstabe ist das?', W / 2, cy + 120, 16, '#8a94a8');
+    text(q.target, W / 2, cy + 170, 66, '#5fa8ff');
+  }
+
+  // Antwort-Optionen
+  if (quiz.phase === 'correct'){
+    text('🎉 RICHTIG! 🎉', W / 2, cy + ch - 90, 40, '#3cab52');
+    const r = REWARDS[quiz.chest.reward];
+    text(r.icon + ' ' + r.text, W / 2, cy + ch - 42, 24, '#e2731e');
+  } else {
+    for (let i = 0; i < 3; i++){
+      const bw2 = 150, bx = W / 2 - 260 + i * 185, by = cy + ch - 118;
+      const sel = quiz.sel === i;
+      ctx.fillStyle = sel ? '#ffd24a' : '#e9eef7';
+      rrect(bx, by, bw2, 78, 18); ctx.fill();
+      if (sel){
+        ctx.strokeStyle = '#e2731e'; ctx.lineWidth = 5;
+        rrect(bx - 3, by - 3, bw2 + 6, 84, 20); ctx.stroke();
+        textOutline('👉', bx - 26, by + 39, 26);
+      }
+      text(q.options[i], bx + bw2 / 2, by + 40, 40, sel ? '#7a4a00' : '#33415c');
+    }
+    text('⬅️ ➡️ wählen · Knopf drücken!', W / 2, cy + ch - 18, 15, '#8a94a8');
+  }
+}
+
+// ---------- Glide zeichnen ----------
+function drawGlide(){
+  const prog = glide.gy / glide.endY;
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, lerpColor('#5db9f0', '#8fd0a8', prog));
+  g.addColorStop(1, lerpColor('#a8dcf8', '#cfeebc', prog));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  for (const c of glide.clouds){
+    const sy = 170 + (c.gy - glide.gy) * 1.0;
+    if (sy < -80 || sy > H + 80) continue;
+    ctx.fillStyle = 'rgba(255,255,255,.8)';
+    drawCloudShape(c.x, sy, c.s);
+  }
+  for (const c of glide.coins){
+    if (c.got) continue;
+    const sy = 170 + (c.gy - glide.gy);
+    if (sy < -40 || sy > H + 40) continue;
+    textOutline('🪙', c.x, sy, 30);
+  }
+
+  // Boden kommt in Sicht
+  const groundY = 170 + (glide.endY + 220 - glide.gy);
+  if (groundY < H + 200){
+    ctx.fillStyle = '#57b04a';
+    ctx.beginPath();
+    ctx.ellipse(W / 2, groundY + 300, 700, 330, 0, 0, 7);
+    ctx.fill();
+  }
+
+  // Spieler mit Paraglider
+  const px = glide.x, py = 190;
+  const tilt = (inp.right ? 0.18 : 0) - (inp.left ? 0.18 : 0);
+  ctx.save();
+  ctx.translate(px, py);
+  ctx.rotate(tilt);
+  // Schirm
+  ctx.fillStyle = '#ff8b3d';
+  ctx.beginPath();
+  ctx.moveTo(-58, -38);
+  ctx.quadraticCurveTo(0, -78, 58, -38);
+  ctx.quadraticCurveTo(0, -52, -58, -38);
+  ctx.fill();
+  ctx.fillStyle = '#ffd24a';
+  ctx.beginPath();
+  ctx.moveTo(-20, -52); ctx.quadraticCurveTo(0, -70, 20, -52);
+  ctx.quadraticCurveTo(0, -60, -20, -52); ctx.fill();
+  // Leinen
+  ctx.strokeStyle = '#555'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-54, -40); ctx.lineTo(-8, 4);
+  ctx.moveTo(54, -40); ctx.lineTo(8, 4);
+  ctx.stroke();
+  // Figur (klein)
+  ctx.fillStyle = '#d94f4f'; rrect(-9, 0, 18, 20, 6); ctx.fill();
+  ctx.fillStyle = '#ffd9b0'; ctx.beginPath(); ctx.arc(0, -6, 8, 0, 7); ctx.fill();
+  ctx.fillStyle = '#7a4a22'; ctx.beginPath(); ctx.arc(0, -9, 8, Math.PI, 0); ctx.fill();
+  ctx.fillStyle = '#3d5a99'; ctx.fillRect(-8, 19, 6, 10); ctx.fillRect(2, 19, 6, 10);
+  ctx.restore();
+
+  // Fahrtwind-Striche
+  for (let i = 0; i < 8; i++){
+    const wy = ((gameT * 500 + i * 97) % (H + 60)) - 30;
+    ctx.strokeStyle = 'rgba(255,255,255,.35)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo((i * 137) % W, wy); ctx.lineTo((i * 137) % W, wy + 26);
+    ctx.stroke();
+  }
+
+  textOutline('🪂 Flieg zu Welt 2!', W / 2, 40, 24);
+  textOutline('🪙 ' + stats.coins, W - 60, 28, 20);
+  // Fortschrittsbalken
+  ctx.fillStyle = 'rgba(0,0,0,.3)'; rrect(W - 34, 80, 14, 380, 7); ctx.fill();
+  ctx.fillStyle = '#ffd24a'; rrect(W - 31, 83 + 354 * prog, 8, 20, 4); ctx.fill();
+}
+
+// ---------- Titel & Endscreens ----------
+function drawTitle(){
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#4aa8e8'); g.addColorStop(1, '#c8ecff');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = 'rgba(255,255,255,.8)';
+  drawCloudShape(160 + Math.sin(gameT * .5) * 20, 120, 1.4);
+  drawCloudShape(800 + Math.sin(gameT * .4 + 2) * 24, 90, 1.1);
+  drawCloudShape(480 + Math.sin(gameT * .3 + 4) * 16, 430, 1.2);
+
+  // kleine Titel-Insel
+  ctx.fillStyle = '#8d7355'; rrect(360, 350, 240, 30, 12); ctx.fill();
+  ctx.fillStyle = '#6fc84f'; rrect(356, 344, 248, 14, 7); ctx.fill();
+  ctx.save();
+  ctx.translate(480, 344);
+  ctx.scale(1.3, 1.3);
+  ctx.translate(-player.w / 2, -player.h);
+  const save = { x: player.x, y: player.y, cx: camX, cy: camY };
+  player.x = 0; player.y = 0; camX = 0; camY = 0;
+  drawPlayer();
+  player.x = save.x; player.y = save.y; camX = save.cx; camY = save.cy;
+  ctx.restore();
+
+  const bob = Math.sin(gameT * 2) * 8;
+  textOutline('SPIELIWER', W / 2, 130 + bob, 84, '#ffd24a', 'rgba(120,60,0,.6)');
+  textOutline('⚔️ Ein Abenteuer von Linus ⚔️', W / 2, 200 + bob, 24);
+
+  if (Math.floor(gameT * 1.4) % 2 === 0)
+    textOutline('Drücke A oder die Leertaste!', W / 2, 440, 26, '#fff');
+  text('🕹️ laufen · A springen · B/X schlagen      ⌨️ Pfeile · Leertaste · X', W / 2, 490, 15, 'rgba(20,40,80,.8)');
+  if (padConnected) textOutline('🎮 Controller verbunden!', W / 2, 300, 18, '#7be07b');
+}
+
+function drawDead(){
+  ctx.fillStyle = 'rgba(30,10,20,' + clamp(stateT, 0, .6) + ')';
+  ctx.fillRect(0, 0, W, H);
+  textOutline('Ohje! 💫', W / 2, H / 2 - 30, 48);
+  text('Gleich geht es weiter…', W / 2, H / 2 + 30, 22, '#ffd24a');
+}
+
+function drawWin(){
+  ctx.fillStyle = 'rgba(20,30,60,.72)';
+  ctx.fillRect(0, 0, W, H);
+  for (let i = 0; i < 40; i++){
+    const fx = (i * 167 + gameT * 40) % W;
+    const fy = (i * 89 + gameT * (60 + i % 5 * 20)) % H;
+    text(['🎉','⭐','🎊','✨'][i % 4], fx, fy, 20 + i % 3 * 8);
+  }
+  textOutline('GESCHAFFT! 🏆', W / 2, 130, 64, '#ffd24a');
+  text('Du hast beide Welten gemeistert!', W / 2, 200, 26, '#fff');
+  const s = SWORDS[player.sword];
+  text('🪙 ' + stats.coins + ' Münzen      👾 ' + stats.kills + ' Monster besiegt', W / 2, 270, 24, '#fff');
+  text('⚔️ ' + s.name + '      ❤️ ' + player.maxHearts + ' Herzen', W / 2, 310, 24, '#fff');
+  text('Welt 3 kommt bald… 🌋', W / 2, 380, 22, '#7fd0ff');
+  if (stateT > 1.5 && Math.floor(gameT * 1.4) % 2 === 0)
+    textOutline('Knopf drücken für nochmal!', W / 2, 460, 24);
+}
+
+// ---------- Welt rendern ----------
+function drawWorld(){
+  drawBackground();
+  for (const pl of world.platforms) drawPlatform(pl);
+  if (world.theme === 'forest'){
+    // Bohnenranke hinter dem Kletterturm
+    ctx.strokeStyle = '#3f8f3a'; ctx.lineWidth = 14;
+    ctx.beginPath();
+    for (let yy = 480; yy > -320; yy -= 20){
+      const xx = 3480 + Math.sin(yy * 0.02) * 30 - camX;
+      if (yy === 480) ctx.moveTo(xx, yy - camY); else ctx.lineTo(xx, yy - camY);
+    }
+    ctx.stroke();
+  }
+  for (const f of world.flags) drawFlag(f);
+  for (const c of world.chests) drawChest(c);
+  if (world.door) drawDoor();
+  for (const e of world.enemies){
+    if (e.type === 'slime') drawSlime(e); else drawFlyer(e);
+  }
+  drawBoss();
+  drawPickups();
+  drawPlayer();
+  drawFx();
+  drawHUD();
+  drawBanner();
+}
+
+// ---------- Hauptschleife ----------
+function startGame(){
+  resetPlayerStats();
+  particles = []; floaters = []; banner = null; quiz = null; glide = null;
+  loadWorld(1);
+  state = 'play'; stateT = 0;
+  speak('Los geht das Abenteuer!');
+}
+
+let lastTime = 0;
+function loop(now){
+  requestAnimationFrame(loop);
+  const dt = Math.min(0.033, (now - lastTime) / 1000 || 0.016);
+  lastTime = now;
+  gameT += dt;
+  stateT += dt;
+  pollInput();
+
+  if (state === 'title'){
+    if (inp.confirmP) startGame();
+    drawTitle();
+  }
+  else if (state === 'play'){
+    updatePlayer(dt);
+    if (state === 'play'){
+      updateEnemies(dt);
+      updateBoss(dt);
+      updateCoins(dt);
+      updateWorldObjects(dt);
+    }
+    updateFx(dt);
+    if (world){
+      camX = lerp(camX, clamp(player.x + player.w / 2 - W / 2, 0, world.w - W), 1 - Math.pow(0.001, dt));
+      camY = lerp(camY, clamp(player.y - H * 0.55, world.top, world.killY - H + 100), 1 - Math.pow(0.001, dt));
+    }
+    if (state === 'glide') { drawGlide(); }
+    else if (world) drawWorld();
+    if (pressedKeys['KeyR']) { state = 'title'; }
+  }
+  else if (state === 'quiz'){
+    updateFx(dt);
+    drawWorld();
+    if (quiz) { updateQuiz(dt); if (quiz) drawQuiz(); }
+  }
+  else if (state === 'glide'){
+    updateGlide(dt);
+    updateFx(dt);
+    if (state === 'glide') drawGlide(); else if (world) drawWorld();
+  }
+  else if (state === 'dead'){
+    updateFx(dt);
+    drawWorld();
+    drawDead();
+    if (stateT > 2){
+      respawn();
+      state = 'play';
+    }
+  }
+  else if (state === 'win'){
+    drawWorld();
+    drawWin();
+    if (stateT > 1.5 && inp.confirmP){ state = 'title'; stateT = 0; }
+  }
+
+  clearPressed();
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
