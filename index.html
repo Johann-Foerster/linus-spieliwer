@@ -73,6 +73,7 @@ function sfx(name){
     case 'roar':    tone(80, .5, 'sawtooth', .18, 0, 200); tone(60,.5,'square',.1,.05,150); break;
     case 'block':   tone(1200,.08,'square',.08,0,800); break;
     case 'glide':   tone(400,.6,'sine',.08,0,700); break;
+    case 'bow':     tone(500,.12,'sine',.12,0,950); break;
   }
 }
 function speak(text){
@@ -108,6 +109,7 @@ function pollInput(){
   let down  = keys['ArrowDown']  || keys['KeyS'];
   let jump  = keys['Space'] || keys['ArrowUp'] || keys['KeyW'];
   let atk   = keys['KeyX'] || keys['KeyK'] || keys['KeyF'];
+  let bowHeld = keys['KeyC'] || keys['KeyV'];
 
   let leftP  = pressedKeys['ArrowLeft'] || pressedKeys['KeyA'];
   let rightP = pressedKeys['ArrowRight'] || pressedKeys['KeyD'];
@@ -115,6 +117,7 @@ function pollInput(){
   let downP  = pressedKeys['ArrowDown'] || pressedKeys['KeyS'];
   let jumpP  = pressedKeys['Space'] || pressedKeys['ArrowUp'] || pressedKeys['KeyW'];
   let atkP   = pressedKeys['KeyX'] || pressedKeys['KeyK'] || pressedKeys['KeyF'];
+  let bowP   = pressedKeys['KeyC'] || pressedKeys['KeyV'];
   let escP   = pressedKeys['Escape'];
 
   const pads = navigator.getGamepads ? navigator.getGamepads() : [];
@@ -129,15 +132,17 @@ function pollInput(){
     if (ax >  0.35 || b(15)) right = true;
     if (ay < -0.5  || b(12)) up = true;
     if (ay >  0.5  || b(13)) down = true;
-    if (b(0) || b(3)) jump = true;          // A / Y springen
+    if (b(0)) jump = true;                  // A springen
     if (b(1) || b(2)) atk = true;           // B / X schlagen
+    if (b(3)) bowHeld = true;               // Y Bogen
 
     if (bp(14)) leftP = true;
     if (bp(15)) rightP = true;
     if (bp(12)) upP = true;
     if (bp(13)) downP = true;
-    if (bp(0) || bp(3)) jumpP = true;
+    if (bp(0)) jumpP = true;
     if (bp(1) || bp(2)) atkP = true;
+    if (bp(3)) bowP = true;
     if (bp(8) || bp(9)) escP = true;
 
     // Stick-Flanken für Menü-Navigation
@@ -151,9 +156,9 @@ function pollInput(){
   }
 
   inp.left = left; inp.right = right; inp.up = up; inp.down = down;
-  inp.jump = jump; inp.atk = atk;
+  inp.jump = jump; inp.atk = atk; inp.bow = bowHeld;
   inp.leftP = leftP; inp.rightP = rightP; inp.upP = upP; inp.downP = downP;
-  inp.jumpP = jumpP; inp.atkP = atkP; inp.escP = escP;
+  inp.jumpP = jumpP; inp.atkP = atkP; inp.bowP = bowP; inp.escP = escP;
   inp.confirmP = jumpP || atkP;
 }
 function clearPressed(){ for (const k in pressedKeys) delete pressedKeys[k]; }
@@ -167,6 +172,7 @@ const SWORDS = [
   { name: 'Goldschwert',    color: '#c98f00', blade: '#ffd24a', dmg: 3 },
   { name: 'Diamantschwert', color: '#1fa8b8', blade: '#7df0ff', dmg: 4 },
 ];
+const BOW_DMG = 3;
 
 // ---------- Globale Zustände ----------
 let state = 'title', stateT = 0;
@@ -182,15 +188,16 @@ let gameT = 0;
 const player = {
   x: 0, y: 0, w: 32, h: 44, vx: 0, vy: 0,
   onGround: false, facing: 1, coyote: 0, jumpBuf: 0,
-  hearts: 3, maxHearts: 3, hasShield: false, shieldCharge: 0,
+  hearts: 3, maxHearts: 3, hasShield: false, shieldCharge: 0, shieldMax: 1,
   sword: 1, invuln: 0, attackT: 0, swingId: 0, animT: 0,
-  hasParaglider: false,
+  hasParaglider: false, hasBow: false, arrows: 0, bowCd: 0,
 };
 
 function resetPlayerStats(){
   player.hearts = 3; player.maxHearts = 3;
-  player.hasShield = false; player.shieldCharge = 0;
+  player.hasShield = false; player.shieldCharge = 0; player.shieldMax = 1;
   player.sword = 1; player.hasParaglider = false;
+  player.hasBow = false; player.arrows = 0; player.bowCd = 0;
   player.invuln = 0; player.attackT = 0; player.vx = 0; player.vy = 0;
   stats = { coins: 0, kills: 0 };
 }
@@ -212,6 +219,14 @@ function burst(x, y, color, n, spd){
 // ---------- Welten ----------
 function plat(x, y, w){ return { x, y, w, h: 26 }; }
 
+function makeBoss(o){
+  return Object.assign({
+    vx: 0, vy: 0, active: false, dead: false, onGround: true,
+    jumpCd: 1.2, t: 0, flash: 0, swingHit: -1, dmg: 1, icon: '👑',
+    spd: 130, spdMad: 190, hopCd: 1.7, hopCdMad: 1.0, jumpV: -540,
+  }, o);
+}
+
 function buildWorld1(){
   const platforms = [
     plat(40, 360, 260), plat(380, 340, 160), plat(620, 300, 140),
@@ -232,11 +247,13 @@ function buildWorld1(){
     flyer(1260, 220), flyer(2430, 210), flyer(3350, 240),
   ];
   const arenaP = platforms[15];
-  const boss = {
-    x: 3950, y: arenaP.y - 90, w: 110, h: 90, vx: 0, vy: 0,
-    hp: 10, maxHp: 10, groundY: arenaP.y, minX: arenaP.x + 10, maxX: arenaP.x + arenaP.w - 120,
-    active: false, dead: false, onGround: true, jumpCd: 1.2, t: 0, flash: 0, swingHit: -1, dmg: 1,
-  };
+  const bosses = [ makeBoss({
+    name: 'Wolkenkönig', icon: '👑', style: 'cloud', drop: 'paraglider',
+    intro: 'Der Wolkenkönig!', introSub: 'Besiege ihn für den Paraglider!',
+    introSay: 'Achtung! Der Wolkenkönig! Besiege ihn und du bekommst den Paraglider!',
+    x: 3950, y: arenaP.y - 90, w: 110, h: 90, hp: 10, maxHp: 10,
+    groundY: arenaP.y, minX: arenaP.x + 10, maxX: arenaP.x + arenaP.w - 120,
+  }) ];
   const chests = [
     { x: 950, y: 326, w: 40, h: 34, task: 'count', reward: 'sword2', open: false, cd: 0 },
     { x: 2140, y: 326, w: 40, h: 34, task: 'add', reward: 'shield', open: false, cd: 0 },
@@ -249,8 +266,8 @@ function buildWorld1(){
   for (let i = 0; i < 14; i++) decor.push({ kind: 'cloud', x: rnd(0, 4400), y: rnd(30, 480), s: rnd(.6, 1.6), spd: rnd(6, 18) });
   return {
     num: 1, name: 'Welt 1 · Himmelsinseln', w: 4400, top: -100, killY: 800,
-    platforms, enemies, chests, flags, boss, decor,
-    pickups: [], coins: [],
+    platforms, enemies, chests, flags, bosses, decor,
+    pickups: [], coins: [], arrows: [],
     spawn: { x: 90, y: 280 }, checkpoint: { x: 90, y: 280 },
     door: null, theme: 'sky',
   };
@@ -268,14 +285,16 @@ function buildWorld2(){
   ];
   const slimeOn = (p, off) => ({ type: 'slime', plat: p, x: p.x + off, y: p.y - 30,
     w: 40, h: 30, hp: 2, maxHp: 2, dmg: 1, dir: 1, spd: 62, t: rnd(0, 9), swingHit: -1, flash: 0 });
-  const flyer = (x, y) => ({ type: 'flyer', ax: x, ay: y, x, y, w: 36, h: 30,
-    hp: 2, maxHp: 2, dmg: 1, t: rnd(0, 9), range: 120, swingHit: -1, flash: 0 });
+  const flyer = (x, y, knock, range) => ({ type: 'flyer', ax: x, ay: y, x, y, w: 36, h: 30,
+    hp: 2, maxHp: 2, dmg: 1, t: rnd(0, 9), range: range || 120, knock: knock || 1, swingHit: -1, flash: 0 });
   const enemies = [
     slimeOn(platforms[1], 60), slimeOn(platforms[3], 60), slimeOn(platforms[3], 260),
     slimeOn(platforms[5], 80), slimeOn(platforms[5], 300), slimeOn(platforms[6], 60),
     slimeOn(platforms[7], 100),
     flyer(900, 360), flyer(1950, 300), flyer(2600, 340),
-    flyer(3480, 200), flyer(3480, -20),
+    // Wächter der Bohnenranke: werfen einen mit kräftigem Stoß vom Turm
+    flyer(3480, 320, 1.8, 70), flyer(3500, 200, 1.8, 70), flyer(3470, 80, 1.8, 70),
+    flyer(3510, -40, 1.8, 70), flyer(3460, -150, 1.8, 70),
   ];
   const chests = [
     { x: 1420, y: 426, w: 40, h: 34, task: 'add2', reward: 'sword4', open: false, cd: 0 },
@@ -290,23 +309,89 @@ function buildWorld2(){
   for (let i = 0; i < 8; i++) decor.push({ kind: 'cloud', x: rnd(0, 3900), y: rnd(-300, 120), s: rnd(.6, 1.2), spd: rnd(6, 14) });
   return {
     num: 2, name: 'Welt 2 · Waldland', w: 3900, top: -420, killY: 720,
-    platforms, enemies, chests, flags, boss: null, decor,
-    pickups: [], coins: [],
+    platforms, enemies, chests, flags, bosses: [], decor,
+    pickups: [], coins: [], arrows: [],
     spawn: { x: 80, y: 380 }, checkpoint: { x: 80, y: 380 },
-    door: { x: 3580, y: -290, w: 70, h: 90 }, theme: 'forest',
+    door: { x: 3580, y: -290, w: 70, h: 90, to: 3 }, theme: 'forest',
+  };
+}
+
+function buildWorld3(){
+  const platforms = [
+    plat(0, 400, 480), plat(560, 380, 360), plat(1000, 400, 420),
+    plat(1500, 410, 560),                       // Arena: Torwächter
+    plat(2140, 380, 380), plat(2600, 400, 460),
+    plat(3140, 410, 600),                       // Arena: Schildwächter
+    plat(3820, 380, 400),
+    plat(4300, 400, 700),                       // Arena: Sturmkönig
+  ];
+  const slimeOn = (p, off) => ({ type: 'slime', plat: p, x: p.x + off, y: p.y - 32,
+    w: 42, h: 32, hp: 6, maxHp: 6, dmg: 1, dir: 1, spd: 80, t: rnd(0, 9), swingHit: -1, flash: 0 });
+  const flyer = (x, y) => ({ type: 'flyer', ax: x, ay: y, x, y, w: 38, h: 32,
+    hp: 6, maxHp: 6, dmg: 1, t: rnd(0, 9), range: 130, swingHit: -1, flash: 0 });
+  const enemies = [
+    slimeOn(platforms[1], 60), slimeOn(platforms[1], 220),
+    slimeOn(platforms[2], 80), slimeOn(platforms[2], 280),
+    slimeOn(platforms[4], 60), slimeOn(platforms[4], 240),
+    slimeOn(platforms[5], 80), slimeOn(platforms[5], 300),
+    slimeOn(platforms[7], 80), slimeOn(platforms[7], 260),
+    slimeOn(platforms[8], 80),
+    flyer(1180, 310), flyer(2320, 290), flyer(2830, 320), flyer(4020, 300), flyer(4500, 310),
+  ];
+  const A1 = platforms[3], A2 = platforms[6], A3 = platforms[8];
+  const bosses = [
+    makeBoss({ name: 'Torwächter', icon: '⚔️', style: 'knight', drop: 'bow',
+      intro: 'Der Torwächter!', introSub: 'Er bewacht den Bogen!',
+      introSay: 'Achtung! Der Torwächter! Besiege ihn und du bekommst den Bogen!',
+      x: A1.x + 380, y: A1.y - 76, w: 90, h: 76, hp: 10, maxHp: 10,
+      groundY: A1.y, minX: A1.x + 10, maxX: A1.x + A1.w - 100, spd: 140, spdMad: 200 }),
+    makeBoss({ name: 'Schildwächter', icon: '⚔️', style: 'knight', drop: 'armor',
+      intro: 'Der Schildwächter!', introSub: 'Er bewacht die goldene Rüstung!',
+      introSay: 'Der Schildwächter! Besiege ihn für die goldene Rüstung!',
+      x: A2.x + 400, y: A2.y - 80, w: 96, h: 80, hp: 12, maxHp: 12,
+      groundY: A2.y, minX: A2.x + 10, maxX: A2.x + A2.w - 106, spd: 150, spdMad: 210 }),
+    makeBoss({ name: 'Sturmkönig', icon: '⛈️', style: 'storm', drop: 'paraglider2',
+      intro: 'Der Sturmkönig!', introSub: 'Der letzte Kampf um den Sturmgleiter!',
+      introSay: 'Der Sturmkönig! Das ist der letzte große Kampf! Du schaffst das!',
+      x: A3.x + 480, y: A3.y - 105, w: 130, h: 105, hp: 16, maxHp: 16,
+      groundY: A3.y, minX: A3.x + 10, maxX: A3.x + A3.w - 140,
+      spd: 170, spdMad: 240, hopCd: 1.4, hopCdMad: 0.85, jumpV: -580 }),
+  ];
+  const chests = [
+    { x: 1200, y: 366, w: 40, h: 34, task: 'sub', reward: 'heartup', open: false, cd: 0 },
+    { x: 2780, y: 366, w: 40, h: 34, task: 'sub', reward: 'arrows10', open: false, cd: 0 },
+    { x: 3960, y: 346, w: 40, h: 34, task: 'letter', reward: 'heartup', open: false, cd: 0 },
+  ];
+  const flags = [
+    { x: 2240, y: 380, active: false }, { x: 3000, y: 400, active: false },
+    { x: 4150, y: 380, active: false },
+  ];
+  const decor = [];
+  for (let i = 0; i < 10; i++) decor.push({ kind: 'tower', x: rnd(0, 5100), y: 0, s: rnd(.7, 1.4) });
+  for (let i = 0; i < 12; i++) decor.push({ kind: 'cloud', x: rnd(0, 5100), y: rnd(60, 500), s: rnd(.7, 1.6), spd: rnd(6, 16) });
+  return {
+    num: 3, name: 'Welt 3 · Wolkenschloss', w: 5100, top: -120, killY: 780,
+    platforms, enemies, chests, flags, bosses, decor,
+    pickups: [], coins: [], arrows: [],
+    spawn: { x: 80, y: 320 }, checkpoint: { x: 80, y: 320 },
+    door: null, theme: 'castle',
   };
 }
 
 function loadWorld(n){
   worldNum = n;
-  world = n === 1 ? buildWorld1() : buildWorld2();
+  world = n === 1 ? buildWorld1() : n === 2 ? buildWorld2() : buildWorld3();
   player.x = world.spawn.x; player.y = world.spawn.y;
   player.vx = 0; player.vy = 0; player.invuln = 1;
   camX = clamp(player.x - W / 2, 0, world.w - W);
   camY = clamp(player.y - H * 0.55, world.top, world.killY - H);
-  showBanner(world.name, n === 1 ? 'Finde den Paraglider!' : 'Klettere hoch zur besseren Welt!', 3.5);
-  speak(n === 1 ? 'Welt eins: Die Himmelsinseln! Finde den Paraglider!'
-                : 'Welt zwei: Das Waldland! Klettere hoch zur besseren Welt!');
+  const subs = {
+    1: ['Finde den Paraglider!', 'Welt eins: Die Himmelsinseln! Finde den Paraglider!'],
+    2: ['Klettere hoch zur besseren Welt!', 'Welt zwei: Das Waldland! Klettere hoch zur besseren Welt!'],
+    3: ['Besiege die drei Wächter!', 'Welt drei: Das Wolkenschloss! Besiege die drei Wächter des Schlosses!'],
+  };
+  showBanner(world.name, subs[n][0], 3.5);
+  speak(subs[n][1]);
 }
 
 // ---------- Quiz (Lern-Aufgaben) ----------
@@ -344,6 +429,16 @@ function makeTask(type){
       spoken: 'Wie viel ist ' + a + ' plus ' + b + '?',
       options: o.options, correct: o.correct };
   }
+  if (type === 'sub'){
+    const a = Math.floor(rnd(4, 10));
+    const b = Math.floor(rnd(1, a - 1));
+    const [emo] = pick(COUNT_ITEMS);
+    const o = numOptions(a - b, 9);
+    return { kind: 'sub', emo, a, b,
+      question: a + ' − ' + b + ' = ?',
+      spoken: 'Wie viel ist ' + a + ' minus ' + b + '?',
+      options: o.options, correct: o.correct };
+  }
   // letter
   const target = pick(LETTERS);
   const set = new Set([target]);
@@ -366,8 +461,9 @@ const REWARDS = {
   sword2:  { icon: '🗡️', apply(){ player.sword = 2; }, text: 'Steinschwert!', spoken: 'Super! Du hast das Steinschwert bekommen!' },
   sword3:  { icon: '⚔️', apply(){ player.sword = 3; }, text: 'Goldschwert!', spoken: 'Wow! Das Goldschwert gehört dir!' },
   sword4:  { icon: '💎', apply(){ player.sword = 4; }, text: 'Diamantschwert!', spoken: 'Unglaublich! Das Diamantschwert! Das stärkste Schwert!' },
-  shield:  { icon: '🛡️', apply(){ player.hasShield = true; player.shieldCharge = 1; }, text: 'Schild!', spoken: 'Toll! Ein Schild! Er blockt einen Treffer!' },
+  shield:  { icon: '🛡️', apply(){ player.hasShield = true; player.shieldCharge = player.shieldMax; }, text: 'Schild!', spoken: 'Toll! Ein Schild! Er blockt einen Treffer!' },
   heartup: { icon: '❤️', apply(){ player.maxHearts++; player.hearts = player.maxHearts; }, text: 'Extra-Herz!', spoken: 'Klasse! Ein Extraherz für dich!' },
+  arrows10:{ icon: '🏹', apply(){ player.arrows = 10; }, text: 'Köcher aufgefüllt!', spoken: 'Toll! Dein Köcher ist wieder voll mit Pfeilen!' },
 };
 
 function updateQuiz(dt){
@@ -378,7 +474,7 @@ function updateQuiz(dt){
       quiz.chest.open = true;
       const r = REWARDS[quiz.chest.reward];
       r.apply();
-      if (player.hasShield) player.shieldCharge = 1;
+      if (player.hasShield) player.shieldCharge = player.shieldMax;
       showBanner(r.icon + ' ' + r.text, '', 2.5);
       burst(player.x + 16, player.y, '#ffd24a', 20, 260);
       quiz = null; state = 'play';
@@ -401,10 +497,11 @@ function updateQuiz(dt){
 }
 
 // ---------- Spieler ----------
-function hurtPlayer(dmg, fromX){
+function hurtPlayer(dmg, fromX, knock){
   if (player.invuln > 0) return;
+  const k = knock || 1;
   const dir = player.x + player.w / 2 < fromX ? -1 : 1;
-  player.vx = dir * 260; player.vy = -320;
+  player.vx = dir * 260 * k; player.vy = -320 * Math.min(k, 1.3);
   player.invuln = 1.3;
   if (player.hasShield && player.shieldCharge > 0){
     player.shieldCharge = 0;
@@ -426,7 +523,7 @@ function respawn(){
   player.x = world.checkpoint.x; player.y = world.checkpoint.y - 60;
   player.vx = 0; player.vy = 0;
   player.hearts = player.maxHearts;
-  if (player.hasShield) player.shieldCharge = 1;
+  if (player.hasShield) player.shieldCharge = player.shieldMax;
   player.invuln = 2;
 }
 
@@ -455,6 +552,20 @@ function updatePlayer(dt){
   if (inp.atkP && p.attackT <= 0){
     p.attackT = 0.26; p.swingId++;
     sfx('swing');
+  }
+
+  // Bogen schießen
+  p.bowCd = Math.max(0, p.bowCd - dt);
+  if (inp.bowP && p.hasBow && p.bowCd <= 0){
+    if (p.arrows > 0){
+      p.arrows--; p.bowCd = 0.45;
+      world.arrows.push({ x: p.x + p.w / 2 + p.facing * 18, y: p.y + 14, vx: p.facing * 560, t: 1.4 });
+      sfx('bow');
+    } else {
+      p.bowCd = 0.4;
+      sfx('wrong');
+      addFloater(p.x, p.y - 20, 'Keine Pfeile!', '#ff9a9a');
+    }
   }
 
   // Physik
@@ -503,6 +614,9 @@ function dropLoot(x, y){
   if (Math.random() < 0.22){
     world.pickups.push({ type: 'heart', x, y: y - 10, w: 26, h: 24, t: 10 });
   }
+  if (player.hasBow && Math.random() < 0.2){
+    world.pickups.push({ type: 'arrows', n: 2, x: x + rnd(-14, 14), y: y - 12, w: 26, h: 22, t: 12 });
+  }
 }
 
 function killEnemy(e){
@@ -538,62 +652,125 @@ function updateEnemies(dt){
       if (e.hp <= 0) killEnemy(e); else sfx('hit');
     }
     // Spieler berührt
-    if (e.hp > 0 && overlap(e, player)) hurtPlayer(e.dmg, e.x + e.w / 2);
+    if (e.hp > 0 && overlap(e, player)) hurtPlayer(e.dmg, e.x + e.w / 2, e.knock);
   }
   world.enemies = world.enemies.filter(e => e.hp > 0);
 }
 
-function updateBoss(dt){
-  const b = world.boss;
-  if (!b || b.dead) return;
-  b.t += dt;
-  b.flash = Math.max(0, b.flash - dt);
+function bossDrop(b){
+  const cx0 = b.x + b.w / 2;
+  if (b.drop === 'paraglider'){
+    world.pickups.push({ type: 'paraglider', x: cx0 - 24, y: b.groundY - 70, w: 48, h: 44, t: 999 });
+    showBanner('🎉 ' + b.name + ' besiegt!', 'Hol dir den Paraglider!', 4);
+    speak('Jaaa! Du hast den ' + b.name + ' besiegt! Hol dir den Paraglider!');
+  } else if (b.drop === 'bow'){
+    world.pickups.push({ type: 'bow', x: cx0 - 22, y: b.groundY - 64, w: 44, h: 40, t: 999 });
+    showBanner('🎉 ' + b.name + ' besiegt!', 'Er hat den Bogen fallen gelassen!', 4);
+    speak('Super! Der ' + b.name + ' ist besiegt! Hol dir den Bogen!');
+  } else if (b.drop === 'armor'){
+    world.pickups.push({ type: 'armor', x: cx0 - 20, y: b.groundY - 62, w: 40, h: 40, t: 999 });
+    showBanner('🎉 ' + b.name + ' besiegt!', 'Er hat die goldene Rüstung fallen gelassen!', 4);
+    speak('Stark! Der ' + b.name + ' ist besiegt! Hol dir die goldene Rüstung!');
+  } else if (b.drop === 'paraglider2'){
+    world.pickups.push({ type: 'paraglider2', x: cx0 - 24, y: b.groundY - 72, w: 48, h: 46, t: 999 });
+    showBanner('🎉 ' + b.name + ' besiegt!', 'Der Sturmgleiter gehört dir!', 4);
+    speak('Unglaublich! Der ' + b.name + ' ist besiegt! Schnapp dir den Sturmgleiter!');
+  }
+}
 
-  if (!b.active){
-    if (Math.abs(player.x - b.x) < 520){
-      b.active = true;
-      showBanner('⚠️ Der Wolkenkönig!', 'Besiege ihn für den Paraglider!', 3.5);
-      speak('Achtung! Der Wolkenkönig! Besiege ihn und du bekommst den Paraglider!');
-      sfx('roar');
+function hitBoss(b, dmg){
+  b.hp -= dmg;
+  b.flash = 0.18;
+  sfx('hit');
+  burst(b.x + b.w / 2, b.y + b.h / 2, '#fff', 8, 180);
+  if (b.hp <= 0){
+    b.dead = true;
+    stats.kills++;
+    burst(b.x + b.w / 2, b.y + b.h / 2, '#dfe9f5', 40, 340);
+    sfx('fanfare');
+    bossDrop(b);
+  }
+}
+
+function updateBosses(dt){
+  for (const b of world.bosses){
+    if (b.dead) continue;
+    b.t += dt;
+    b.flash = Math.max(0, b.flash - dt);
+
+    if (!b.active){
+      if (Math.abs(player.x - b.x) < 500){
+        b.active = true;
+        showBanner('⚠️ ' + b.intro, b.introSub, 3.5);
+        speak(b.introSay);
+        sfx('roar');
+      }
+      continue;
     }
-    return;
-  }
 
-  b.vy += GRAV * 0.8 * dt;
-  b.y += b.vy * dt;
-  if (b.y + b.h >= b.groundY){
-    if (!b.onGround){ burst(b.x + b.w / 2, b.groundY, '#dfe9f5', 12, 180); sfx('stomp'); }
-    b.y = b.groundY - b.h; b.vy = 0; b.onGround = true;
-  }
-  b.jumpCd -= dt;
-  if (b.onGround && b.jumpCd <= 0){
-    const enraged = b.hp <= 4;
-    const dir = Math.sign(player.x - b.x) || 1;
-    b.vx = dir * (enraged ? 190 : 130);
-    b.vy = -540; b.onGround = false;
-    b.jumpCd = enraged ? 1.0 : 1.7;
-  }
-  if (!b.onGround) b.x += b.vx * dt;
-  b.x = clamp(b.x, b.minX, b.maxX);
+    b.vy += GRAV * 0.8 * dt;
+    b.y += b.vy * dt;
+    if (b.y + b.h >= b.groundY){
+      if (!b.onGround){ burst(b.x + b.w / 2, b.groundY, '#dfe9f5', 12, 180); sfx('stomp'); }
+      b.y = b.groundY - b.h; b.vy = 0; b.onGround = true;
+    }
+    b.jumpCd -= dt;
+    if (b.onGround && b.jumpCd <= 0){
+      const enraged = b.hp <= b.maxHp * 0.4;
+      const dir = Math.sign(player.x - b.x) || 1;
+      b.vx = dir * (enraged ? b.spdMad : b.spd);
+      b.vy = b.jumpV; b.onGround = false;
+      b.jumpCd = enraged ? b.hopCdMad : b.hopCd;
+    }
+    if (!b.onGround) b.x += b.vx * dt;
+    b.x = clamp(b.x, b.minX, b.maxX);
 
-  const hb = swordHitbox();
-  if (hb && b.swingHit !== player.swingId && overlap(hb, b)){
-    b.swingHit = player.swingId;
-    b.hp -= SWORDS[player.sword].dmg;
-    b.flash = 0.18;
-    sfx('hit');
-    burst(player.x + player.facing * 40, b.y + b.h / 2, '#fff', 8, 180);
-    if (b.hp <= 0){
-      b.dead = true;
-      stats.kills++;
-      burst(b.x + b.w / 2, b.y + b.h / 2, '#dfe9f5', 40, 340);
-      sfx('fanfare');
-      world.pickups.push({ type: 'paraglider', x: b.x + b.w / 2 - 24, y: b.groundY - 70, w: 48, h: 44, t: 999 });
-      showBanner('🎉 Wolkenkönig besiegt!', 'Hol dir den Paraglider!', 4);
-      speak('Jaaa! Du hast den Wolkenkönig besiegt! Hol dir den Paraglider!');
+    const hb = swordHitbox();
+    if (hb && b.swingHit !== player.swingId && overlap(hb, b)){
+      b.swingHit = player.swingId;
+      hitBoss(b, SWORDS[player.sword].dmg);
+    }
+    if (!b.dead && overlap(b, player)) hurtPlayer(b.dmg, b.x + b.w / 2);
+  }
+}
+
+// ---------- Pfeile ----------
+function updateArrows(dt){
+  for (const a of world.arrows){
+    a.t -= dt;
+    a.x += a.vx * dt;
+    const hitbox = { x: a.x - 14, y: a.y - 3, w: 28, h: 6 };
+    for (const e of world.enemies){
+      if (e.hp > 0 && overlap(hitbox, e)){
+        e.hp -= BOW_DMG; e.flash = 0.15; a.t = 0;
+        if (e.hp <= 0) killEnemy(e); else sfx('hit');
+        break;
+      }
+    }
+    if (a.t <= 0) continue;
+    for (const b of world.bosses){
+      if (!b.dead && b.active && overlap(hitbox, b)){
+        a.t = 0;
+        hitBoss(b, BOW_DMG);
+        break;
+      }
     }
   }
-  if (!b.dead && overlap(b, player)) hurtPlayer(b.dmg, b.x + b.w / 2);
+  world.arrows = world.arrows.filter(a => a.t > 0);
+  world.enemies = world.enemies.filter(e => e.hp > 0);
+}
+
+function drawArrows(){
+  for (const a of world.arrows){
+    const x = a.x - camX, y = a.y - camY;
+    const d = Math.sign(a.vx) || 1;
+    ctx.strokeStyle = '#7a4a22'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(x - 12 * d, y); ctx.lineTo(x + 8 * d, y); ctx.stroke();
+    ctx.fillStyle = '#aeb9c4';
+    ctx.beginPath();
+    ctx.moveTo(x + 16 * d, y); ctx.lineTo(x + 7 * d, y - 5); ctx.lineTo(x + 7 * d, y + 5);
+    ctx.closePath(); ctx.fill();
+  }
 }
 
 // ---------- Münzen & Pickups ----------
@@ -631,7 +808,31 @@ function updateCoins(dt){
       sfx('fanfare');
       speak('Der Paraglider gehört dir! Und ein Extraherz! Jetzt geht es hinunter in Welt zwei! Festhalten!');
       showBanner('🪂 Paraglider + ❤️ Extra-Herz!', 'Ab in Welt 2!', 3);
-      startGlide();
+      startGlide(2, 'day');
+    } else if (pu.type === 'paraglider2'){
+      pu.t = 0;
+      player.maxHearts++; player.hearts = player.maxHearts;
+      sfx('fanfare');
+      speak('Der Sturmgleiter gehört dir! Und noch ein Extraherz! Jetzt kommt der große Festflug! Festhalten!');
+      showBanner('🪂 Sturmgleiter + ❤️ Extra-Herz!', 'Der große Finale-Flug!', 3);
+      startGlide('win', 'sunset');
+    } else if (pu.type === 'bow'){
+      pu.t = 0;
+      player.hasBow = true; player.arrows = 10;
+      sfx('fanfare');
+      speak('Der Bogen gehört dir! Drücke C oder die obere Taste zum Schießen! Monster lassen jetzt Pfeile fallen!');
+      showBanner('🏹 Bogen + voller Köcher!', 'Schießen: C-Taste oder Y am Controller', 4.5);
+    } else if (pu.type === 'armor'){
+      pu.t = 0;
+      player.hasShield = true; player.shieldMax = 2; player.shieldCharge = 2;
+      sfx('fanfare');
+      speak('Die goldene Rüstung! Dein Schild blockt jetzt zwei Treffer!');
+      showBanner('🛡️ Goldene Rüstung!', 'Blockt jetzt 2 Treffer!', 3.5);
+    } else if (pu.type === 'arrows'){
+      pu.t = 0;
+      player.arrows = Math.min(10, player.arrows + pu.n);
+      sfx('coin');
+      addFloater(pu.x, pu.y - 14, '+' + pu.n + ' 🏹', '#ffd24a');
     }
   }
   world.pickups = world.pickups.filter(p => p.t > 0);
@@ -643,8 +844,8 @@ function updateWorldObjects(dt){
     if (!f.active && Math.abs(player.x - f.x) < 40 && Math.abs(player.y + player.h - f.y) < 60){
       f.active = true;
       world.checkpoint = { x: f.x, y: f.y };
-      if (player.hasShield && player.shieldCharge < 1){
-        player.shieldCharge = 1;
+      if (player.hasShield && player.shieldCharge < player.shieldMax){
+        player.shieldCharge = player.shieldMax;
         addFloater(f.x, f.y - 80, '🛡️ aufgeladen!', '#7fd0ff');
       }
       sfx('check');
@@ -660,20 +861,20 @@ function updateWorldObjects(dt){
     }
   }
   if (world.door && overlap(world.door, player)){
-    state = 'win'; stateT = 0; banner = null;
     sfx('fanfare');
-    speak('Fantastisch! Du hast beide Welten geschafft! Du bist ein echter Held!');
+    loadWorld(world.door.to);
   }
 }
 
 // ---------- Paraglider-Flug ----------
-function startGlide(){
-  glide = { x: W / 2, gy: 0, endY: 2800, t: 0, coins: [], clouds: [], collected: 0 };
-  for (let i = 0; i < 36; i++){
-    glide.coins.push({ x: rnd(120, W - 120), gy: rnd(250, 2650), got: false });
+function startGlide(next, style){
+  const endY = next === 'win' ? 3200 : 2800;
+  glide = { x: W / 2, gy: 0, endY, t: 0, coins: [], clouds: [], collected: 0, next, style };
+  for (let i = 0; i < (next === 'win' ? 46 : 36); i++){
+    glide.coins.push({ x: rnd(120, W - 120), gy: rnd(250, endY - 150), got: false });
   }
   for (let i = 0; i < 26; i++){
-    glide.clouds.push({ x: rnd(-50, W + 50), gy: rnd(0, 2900), s: rnd(.5, 1.5) });
+    glide.clouds.push({ x: rnd(-50, W + 50), gy: rnd(0, endY + 100), s: rnd(.5, 1.5) });
   }
   state = 'glide'; stateT = 0;
   sfx('glide');
@@ -694,9 +895,16 @@ function updateGlide(dt){
     }
   }
   if (glide.gy >= glide.endY){
+    const next = glide.next;
     glide = null;
-    loadWorld(2);
-    state = 'play';
+    if (next === 'win'){
+      state = 'win'; stateT = 0; banner = null;
+      sfx('fanfare');
+      speak('Fantastisch! Du hast alle drei Welten geschafft! Du bist ein echter Held!');
+    } else {
+      loadWorld(next);
+      state = 'play';
+    }
   }
 }
 
@@ -754,6 +962,8 @@ function drawBackground(){
   const g = ctx.createLinearGradient(0, 0, 0, H);
   if (world.theme === 'sky'){
     g.addColorStop(0, '#5db9f0'); g.addColorStop(0.7, '#a8dcf8'); g.addColorStop(1, '#e8f7ff');
+  } else if (world.theme === 'castle'){
+    g.addColorStop(0, '#8ea8ff'); g.addColorStop(0.6, '#cdd6ff'); g.addColorStop(1, '#ffe9c4');
   } else {
     const climb = clamp((300 - player.y) / 700, 0, 1); // höher = heller
     g.addColorStop(0, lerpColor('#7fc4e8', '#ffd9a0', climb));
@@ -784,6 +994,20 @@ function drawBackground(){
         ctx.fillStyle = '#7a5c3a';
         ctx.fillRect(sx - 7 * d.s, sy - 60 * d.s, 14 * d.s, 70 * d.s);
       }
+    } else if (d.kind === 'tower'){
+      const sx = d.x - camX * 0.45, sy = 440 - camY * 0.45;
+      if (sx > -140 && sx < W + 140){
+        ctx.fillStyle = 'rgba(215,224,248,.85)';
+        ctx.fillRect(sx - 26 * d.s, sy - 190 * d.s, 52 * d.s, 220 * d.s);
+        ctx.fillStyle = 'rgba(150,130,215,.8)';
+        ctx.beginPath();
+        ctx.moveTo(sx - 34 * d.s, sy - 190 * d.s);
+        ctx.lineTo(sx, sy - 252 * d.s);
+        ctx.lineTo(sx + 34 * d.s, sy - 190 * d.s);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(90,90,140,.5)';
+        ctx.fillRect(sx - 8 * d.s, sy - 150 * d.s, 16 * d.s, 26 * d.s);
+      }
     }
   }
 }
@@ -808,6 +1032,15 @@ function drawPlatform(pl){
     ctx.fill();
     ctx.fillStyle = '#6fc84f';
     rrect(x - 3, y, pl.w + 6, 14, 7); ctx.fill();
+  } else if (world.theme === 'castle'){
+    ctx.fillStyle = '#c3cce4';
+    rrect(x, y + 6, pl.w, pl.h + 16, 6); ctx.fill();
+    ctx.fillStyle = '#e8edfa';
+    rrect(x - 3, y, pl.w + 6, 12, 4); ctx.fill();
+    ctx.fillStyle = '#aab6d6';
+    for (let zx = x + 6; zx < x + pl.w - 12; zx += 34) ctx.fillRect(zx, y - 8, 16, 10);
+    ctx.fillStyle = '#ffd24a';
+    ctx.fillRect(x, y + 12, pl.w, 3);
   } else {
     ctx.fillStyle = '#8a6642';
     rrect(x, y + 6, pl.w, pl.h + 14, 8); ctx.fill();
@@ -862,10 +1095,14 @@ function drawDoor(){
 function drawSlime(e){
   const x = e.x - camX, y = e.y - camY;
   const squish = 1 + Math.sin(e.t * 9) * 0.08;
-  ctx.fillStyle = e.flash > 0 ? '#fff' : (world.theme === 'sky' ? '#79d84f' : '#e2733e');
+  ctx.fillStyle = e.flash > 0 ? '#fff' : (world.theme === 'sky' ? '#79d84f' : world.theme === 'castle' ? '#8f9fd6' : '#e2733e');
   ctx.beginPath();
   ctx.ellipse(x + e.w / 2, y + e.h - e.h / 2 * squish, e.w / 2, e.h / 2 * squish, 0, 0, 7);
   ctx.fill();
+  if (world.theme === 'castle'){
+    ctx.fillStyle = '#5d6c85';
+    ctx.beginPath(); ctx.arc(x + e.w / 2, y + e.h / 2 - 4, 13, Math.PI, 0); ctx.fill();
+  }
   ctx.fillStyle = '#fff';
   ctx.beginPath(); ctx.arc(x + e.w / 2 - 8, y + e.h / 2 - 2, 5, 0, 7); ctx.arc(x + e.w / 2 + 8, y + e.h / 2 - 2, 5, 0, 7); ctx.fill();
   ctx.fillStyle = '#222';
@@ -898,44 +1135,75 @@ function drawFlyer(e){
   }
 }
 
-function drawBoss(){
-  const b = world.boss;
-  if (!b || b.dead) return;
+const BOSS_STYLES = {
+  cloud:  { body: '#e8eef7', puff: '#c8d4e8', face: '#33415c', crown: true },
+  knight: { body: '#9aabce', puff: '#7e90b5', face: '#2d3a52', helmet: true },
+  storm:  { body: '#5d6b80', puff: '#48566b', face: '#ffd24a', crown: true, bolt: true },
+};
+
+function drawBossBody(b){
+  const s = BOSS_STYLES[b.style] || BOSS_STYLES.cloud;
   const x = b.x - camX, y = b.y - camY;
   const squish = b.onGround ? 1 + Math.sin(b.t * 6) * 0.05 : 1.1;
-  ctx.fillStyle = b.flash > 0 ? '#fff' : '#e8eef7';
+  const topY = y + b.h - b.h * squish;
+  ctx.fillStyle = b.flash > 0 ? '#fff' : s.body;
   ctx.beginPath();
   ctx.ellipse(x + b.w / 2, y + b.h - (b.h / 2) * squish, b.w / 2, (b.h / 2) * squish, 0, 0, 7);
   ctx.fill();
-  ctx.fillStyle = b.flash > 0 ? '#eee' : '#c8d4e8';
+  // seitliche Wolken-/Schulterpolster
+  ctx.fillStyle = b.flash > 0 ? '#eee' : s.puff;
   ctx.beginPath();
-  ctx.arc(x + 24, y + b.h - 60, 22, 0, 7);
-  ctx.arc(x + b.w - 24, y + b.h - 60, 22, 0, 7);
+  ctx.arc(x + b.w * 0.2, y + b.h - b.h * 0.62, b.w * 0.2, 0, 7);
+  ctx.arc(x + b.w * 0.8, y + b.h - b.h * 0.62, b.w * 0.2, 0, 7);
   ctx.fill();
-  // Krone
-  ctx.fillStyle = '#ffd24a';
-  ctx.beginPath();
-  const cx0 = x + b.w / 2 - 26, cy0 = y + b.h - b.h * squish + 4;
-  ctx.moveTo(cx0, cy0); ctx.lineTo(cx0, cy0 - 22); ctx.lineTo(cx0 + 13, cy0 - 8);
-  ctx.lineTo(cx0 + 26, cy0 - 24); ctx.lineTo(cx0 + 39, cy0 - 8); ctx.lineTo(cx0 + 52, cy0 - 22);
-  ctx.lineTo(cx0 + 52, cy0); ctx.fill();
+  if (s.crown){
+    ctx.fillStyle = '#ffd24a';
+    ctx.beginPath();
+    const cx0 = x + b.w / 2 - b.w * 0.24, cy0 = topY + 4, cw = b.w * 0.48;
+    ctx.moveTo(cx0, cy0); ctx.lineTo(cx0, cy0 - 22); ctx.lineTo(cx0 + cw * 0.25, cy0 - 8);
+    ctx.lineTo(cx0 + cw * 0.5, cy0 - 24); ctx.lineTo(cx0 + cw * 0.75, cy0 - 8); ctx.lineTo(cx0 + cw, cy0 - 22);
+    ctx.lineTo(cx0 + cw, cy0); ctx.fill();
+  }
+  if (s.helmet){
+    ctx.fillStyle = '#5d6c85';
+    ctx.beginPath();
+    ctx.arc(x + b.w / 2, topY + b.h * 0.34, b.w * 0.32, Math.PI, 0);
+    ctx.fill();
+    ctx.fillRect(x + b.w / 2 - b.w * 0.32, topY + b.h * 0.3, b.w * 0.64, 8);
+    // Helmbusch
+    ctx.fillStyle = '#d94f4f';
+    ctx.beginPath();
+    ctx.moveTo(x + b.w / 2 - 5, topY + b.h * 0.06);
+    ctx.quadraticCurveTo(x + b.w / 2, topY - 18, x + b.w / 2 + 5, topY + b.h * 0.06);
+    ctx.fill();
+  }
+  if (s.bolt) textOutline('⚡', x + b.w / 2, y + b.h - 24, 26);
   // böse Augen
-  ctx.fillStyle = '#33415c';
+  const eyeY = y + b.h * 0.44;
+  ctx.fillStyle = s.face;
   ctx.beginPath();
-  ctx.arc(x + b.w / 2 - 18, y + 40, 7, 0, 7);
-  ctx.arc(x + b.w / 2 + 18, y + 40, 7, 0, 7);
+  ctx.arc(x + b.w / 2 - b.w * 0.16, eyeY, b.w * 0.06, 0, 7);
+  ctx.arc(x + b.w / 2 + b.w * 0.16, eyeY, b.w * 0.06, 0, 7);
   ctx.fill();
-  ctx.strokeStyle = '#33415c'; ctx.lineWidth = 4;
-  ctx.beginPath(); ctx.moveTo(x + b.w / 2 - 30, y + 26); ctx.lineTo(x + b.w / 2 - 8, y + 34); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x + b.w / 2 + 30, y + 26); ctx.lineTo(x + b.w / 2 + 8, y + 34); ctx.stroke();
+  ctx.strokeStyle = s.face; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(x + b.w / 2 - b.w * 0.27, eyeY - 14); ctx.lineTo(x + b.w / 2 - b.w * 0.07, eyeY - 6); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + b.w / 2 + b.w * 0.27, eyeY - 14); ctx.lineTo(x + b.w / 2 + b.w * 0.07, eyeY - 6); ctx.stroke();
   ctx.beginPath();
-  ctx.arc(x + b.w / 2, y + 62, 12, 0.2, Math.PI - 0.2); ctx.stroke();
+  ctx.arc(x + b.w / 2, eyeY + 22, b.w * 0.11, 0.2, Math.PI - 0.2); ctx.stroke();
+}
 
-  if (b.active){
+function drawBosses(){
+  let barBoss = null;
+  for (const b of world.bosses){
+    if (b.dead) continue;
+    drawBossBody(b);
+    if (b.active && (!barBoss || Math.abs(b.x - player.x) < Math.abs(barBoss.x - player.x))) barBoss = b;
+  }
+  if (barBoss){
     const bw = 300, bx = W / 2 - bw / 2;
     ctx.fillStyle = 'rgba(0,0,0,.4)'; rrect(bx - 4, 46, bw + 8, 22, 10); ctx.fill();
-    ctx.fillStyle = '#ff5b6e'; rrect(bx, 50, bw * b.hp / b.maxHp, 14, 7); ctx.fill();
-    textOutline('👑 Wolkenkönig', W / 2, 34, 17);
+    ctx.fillStyle = '#ff5b6e'; rrect(bx, 50, bw * barBoss.hp / barBoss.maxHp, 14, 7); ctx.fill();
+    textOutline(barBoss.icon + ' ' + barBoss.name, W / 2, 34, 17);
   }
 }
 
@@ -1008,10 +1276,21 @@ function drawPickups(){
     const x = pu.x - camX, y = pu.y - camY + Math.sin(gameT * 3) * 5;
     if (pu.type === 'heart'){
       textOutline('❤️', x + 13, y + 12, 24);
-    } else if (pu.type === 'paraglider'){
+    } else if (pu.type === 'paraglider' || pu.type === 'paraglider2'){
       ctx.fillStyle = 'rgba(255,255,160,' + (0.3 + Math.sin(gameT * 5) * 0.2) + ')';
       ctx.beginPath(); ctx.arc(x + 24, y + 22, 44, 0, 7); ctx.fill();
       textOutline('🪂', x + 24, y + 22, 40);
+      if (pu.type === 'paraglider2') textOutline('⚡', x + 46, y + 2, 20);
+    } else if (pu.type === 'bow'){
+      ctx.fillStyle = 'rgba(160,220,255,' + (0.3 + Math.sin(gameT * 5) * 0.2) + ')';
+      ctx.beginPath(); ctx.arc(x + 22, y + 20, 40, 0, 7); ctx.fill();
+      textOutline('🏹', x + 22, y + 20, 36);
+    } else if (pu.type === 'armor'){
+      ctx.fillStyle = 'rgba(255,220,120,' + (0.3 + Math.sin(gameT * 5) * 0.2) + ')';
+      ctx.beginPath(); ctx.arc(x + 20, y + 20, 38, 0, 7); ctx.fill();
+      textOutline('🛡️', x + 20, y + 20, 34);
+    } else if (pu.type === 'arrows'){
+      textOutline('🏹', x + 13, y + 11, 20);
     }
   }
   for (const c of world.coins){
@@ -1044,7 +1323,8 @@ function drawHUD(){
     textOutline(i < player.hearts ? '❤️' : '🖤', 30 + i * 30, 28, 22);
   }
   if (player.hasShield){
-    textOutline(player.shieldCharge > 0 ? '🛡️' : '⬜', 30 + player.maxHearts * 30 + 10, 28, 22);
+    for (let i = 0; i < player.shieldMax; i++)
+      textOutline(i < player.shieldCharge ? '🛡️' : '⬜', 30 + (player.maxHearts + i) * 30 + 10, 28, 22);
   }
   // Schwert-Anzeige
   const s = SWORDS[player.sword];
@@ -1053,6 +1333,23 @@ function drawHUD(){
   ctx.save();
   ctx.translate(36, 68); ctx.rotate(0.8); drawSword(player.sword, 20); ctx.restore();
   text(s.name, 52, 61, 14, '#fff', 'left');
+  // Bogen: Köcher mit bis zu 10 Pfeilen nebeneinander
+  if (player.hasBow){
+    ctx.fillStyle = 'rgba(0,0,0,.3)';
+    rrect(14, 82, 194, 30, 10); ctx.fill();
+    textOutline('🏹', 32, 97, 16);
+    for (let i = 0; i < 10; i++){
+      const ax = 54 + i * 15;
+      ctx.globalAlpha = i < player.arrows ? 1 : 0.2;
+      ctx.strokeStyle = '#e8d9a0'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(ax, 106); ctx.lineTo(ax, 92); ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.moveTo(ax, 87); ctx.lineTo(ax - 4, 94); ctx.lineTo(ax + 4, 94); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#d94f4f'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(ax - 3, 108); ctx.lineTo(ax, 103); ctx.moveTo(ax + 3, 108); ctx.lineTo(ax, 103); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
   // Münzen
   textOutline('🪙 ' + stats.coins, W - 60, 28, 20);
   // Weltname
@@ -1105,6 +1402,16 @@ function drawQuiz(){
     drawGroup(q.a, W / 2 - 190);
     text('➕', W / 2, cy + 155, 36);
     drawGroup(q.b, W / 2 + 190);
+  } else if (q.kind === 'sub'){
+    const perRow = Math.min(q.a, 5);
+    for (let i = 0; i < q.a; i++){
+      const r = Math.floor(i / perRow), col = i % perRow;
+      const inRow = Math.min(perRow, q.a - r * perRow);
+      const ix = W / 2 - (inRow - 1) * 33 + col * 66;
+      const iy = cy + 140 + r * 62;
+      text(q.emo, ix, iy, 40);
+      if (i >= q.a - q.b) text('❌', ix, iy, 40);
+    }
   } else {
     text('Welcher Buchstabe ist das?', W / 2, cy + 120, 16, '#8a94a8');
     text(q.target, W / 2, cy + 170, 66, '#5fa8ff');
@@ -1135,9 +1442,15 @@ function drawQuiz(){
 // ---------- Glide zeichnen ----------
 function drawGlide(){
   const prog = glide.gy / glide.endY;
+  const sunset = glide.style === 'sunset';
   const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, lerpColor('#5db9f0', '#8fd0a8', prog));
-  g.addColorStop(1, lerpColor('#a8dcf8', '#cfeebc', prog));
+  if (sunset){
+    g.addColorStop(0, lerpColor('#6f5fd0', '#ff8a5b', prog));
+    g.addColorStop(1, lerpColor('#c8a0f0', '#ffe2a8', prog));
+  } else {
+    g.addColorStop(0, lerpColor('#5db9f0', '#8fd0a8', prog));
+    g.addColorStop(1, lerpColor('#a8dcf8', '#cfeebc', prog));
+  }
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
 
@@ -1154,13 +1467,15 @@ function drawGlide(){
     textOutline('🪙', c.x, sy, 30);
   }
 
-  // Boden kommt in Sicht
-  const groundY = 170 + (glide.endY + 220 - glide.gy);
-  if (groundY < H + 200){
-    ctx.fillStyle = '#57b04a';
-    ctx.beginPath();
-    ctx.ellipse(W / 2, groundY + 300, 700, 330, 0, 0, 7);
-    ctx.fill();
+  // Boden kommt in Sicht (nur bei Landung in Welt 2)
+  if (glide.next !== 'win'){
+    const groundY = 170 + (glide.endY + 220 - glide.gy);
+    if (groundY < H + 200){
+      ctx.fillStyle = '#57b04a';
+      ctx.beginPath();
+      ctx.ellipse(W / 2, groundY + 300, 700, 330, 0, 0, 7);
+      ctx.fill();
+    }
   }
 
   // Spieler mit Paraglider
@@ -1169,14 +1484,14 @@ function drawGlide(){
   ctx.save();
   ctx.translate(px, py);
   ctx.rotate(tilt);
-  // Schirm
-  ctx.fillStyle = '#ff8b3d';
+  // Schirm (Sturmgleiter ist blau-lila)
+  ctx.fillStyle = sunset ? '#5f8bff' : '#ff8b3d';
   ctx.beginPath();
   ctx.moveTo(-58, -38);
   ctx.quadraticCurveTo(0, -78, 58, -38);
   ctx.quadraticCurveTo(0, -52, -58, -38);
   ctx.fill();
-  ctx.fillStyle = '#ffd24a';
+  ctx.fillStyle = sunset ? '#b06fff' : '#ffd24a';
   ctx.beginPath();
   ctx.moveTo(-20, -52); ctx.quadraticCurveTo(0, -70, 20, -52);
   ctx.quadraticCurveTo(0, -60, -20, -52); ctx.fill();
@@ -1203,7 +1518,7 @@ function drawGlide(){
     ctx.stroke();
   }
 
-  textOutline('🪂 Flieg zu Welt 2!', W / 2, 40, 24);
+  textOutline(sunset ? '🪂⚡ Der große Finale-Flug!' : '🪂 Flieg zu Welt 2!', W / 2, 40, 24);
   textOutline('🪙 ' + stats.coins, W - 60, 28, 20);
   // Fortschrittsbalken
   ctx.fillStyle = 'rgba(0,0,0,.3)'; rrect(W - 34, 80, 14, 380, 7); ctx.fill();
@@ -1240,7 +1555,7 @@ function drawTitle(){
 
   if (Math.floor(gameT * 1.4) % 2 === 0)
     textOutline('Drücke A oder die Leertaste!', W / 2, 440, 26, '#fff');
-  text('🕹️ laufen · A springen · B/X schlagen      ⌨️ Pfeile · Leertaste · X', W / 2, 490, 15, 'rgba(20,40,80,.8)');
+  text('🕹️ laufen · A springen · B/X schlagen · Y Bogen      ⌨️ Pfeile · Leertaste · X · C Bogen', W / 2, 490, 15, 'rgba(20,40,80,.8)');
   if (padConnected) textOutline('🎮 Controller verbunden!', W / 2, 300, 18, '#7be07b');
 }
 
@@ -1260,11 +1575,11 @@ function drawWin(){
     text(['🎉','⭐','🎊','✨'][i % 4], fx, fy, 20 + i % 3 * 8);
   }
   textOutline('GESCHAFFT! 🏆', W / 2, 130, 64, '#ffd24a');
-  text('Du hast beide Welten gemeistert!', W / 2, 200, 26, '#fff');
+  text('Du hast alle drei Welten gemeistert!', W / 2, 200, 26, '#fff');
   const s = SWORDS[player.sword];
   text('🪙 ' + stats.coins + ' Münzen      👾 ' + stats.kills + ' Monster besiegt', W / 2, 270, 24, '#fff');
-  text('⚔️ ' + s.name + '      ❤️ ' + player.maxHearts + ' Herzen', W / 2, 310, 24, '#fff');
-  text('Welt 3 kommt bald… 🌋', W / 2, 380, 22, '#7fd0ff');
+  text('⚔️ ' + s.name + (player.hasBow ? '  ·  🏹 Bogen' : '') + '      ❤️ ' + player.maxHearts + ' Herzen', W / 2, 310, 24, '#fff');
+  text('Welt 4 kommt bald… 🌊', W / 2, 380, 22, '#7fd0ff');
   if (stateT > 1.5 && Math.floor(gameT * 1.4) % 2 === 0)
     textOutline('Knopf drücken für nochmal!', W / 2, 460, 24);
 }
@@ -1289,8 +1604,9 @@ function drawWorld(){
   for (const e of world.enemies){
     if (e.type === 'slime') drawSlime(e); else drawFlyer(e);
   }
-  drawBoss();
+  drawBosses();
   drawPickups();
+  drawArrows();
   drawPlayer();
   drawFx();
   drawHUD();
@@ -1323,7 +1639,8 @@ function loop(now){
     updatePlayer(dt);
     if (state === 'play'){
       updateEnemies(dt);
-      updateBoss(dt);
+      updateBosses(dt);
+      updateArrows(dt);
       updateCoins(dt);
       updateWorldObjects(dt);
     }
