@@ -653,7 +653,8 @@ function updateWorldObjects(dt){
   }
   for (const c of world.chests){
     c.cd = Math.max(0, c.cd - dt);
-    if (!c.open && c.cd <= 0 && overlap(c, player)){
+    if (!c.open && c.cd <= 0 && overlap(c, player) && inp.atkP){
+      player.attackT = 0; // kein Schwerthieb beim Öffnen
       openChest(c);
       return;
     }
@@ -823,7 +824,12 @@ function drawChest(c){
   ctx.fillRect(x, y + (c.open ? 18 : 14), c.w, 6);
   ctx.fillRect(x + c.w / 2 - 4, y + (c.open ? 14 : 10), 8, 12);
   if (!c.open){
-    textOutline('❓', x + c.w / 2, y - 18 + Math.sin(gameT * 3) * 4, 22);
+    if (overlap(c, player) && c.cd <= 0){
+      textOutline('⚔️', x + c.w / 2, y - 26 + Math.sin(gameT * 6) * 4, 26);
+      textOutline('Schlag-Knopf!', x + c.w / 2, y - 54, 14, '#ffd24a');
+    } else {
+      textOutline('❓', x + c.w / 2, y - 18 + Math.sin(gameT * 3) * 4, 22);
+    }
   }
 }
 
@@ -986,7 +992,8 @@ function drawPlayer(){
   let ang;
   if (p.attackT > 0){
     const k = 1 - p.attackT / 0.26;      // 0 -> 1 über den Schwung
-    ang = lerp(-2.1, 0.9, Math.min(1, k * 1.6));
+    // kurz über dem Kopf ausholen, dann nach vorne-unten durchschlagen
+    ang = lerp(-0.7, 2.1, Math.min(1, k * 1.6));
   } else {
     ang = 0.6;
   }
