@@ -77,14 +77,17 @@ function sfx(name){
     case 'djump':   tone(600,.14,'square',.1,0,1100); break;
   }
 }
-function speak(text){
+function speak(text, onDone){
+  let called = false;
+  const finish = () => { if (!called){ called = true; if (onDone) onDone(); } };
   try {
-    if (!('speechSynthesis' in window)) return;
+    if (!('speechSynthesis' in window)){ finish(); return; }
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = 'de-DE'; u.rate = 0.95; u.pitch = 1.1;
+    u.onend = finish; u.onerror = finish;
     speechSynthesis.speak(u);
-  } catch(e){}
+  } catch(e){ finish(); }
 }
 
 // ---------- Input (Tastatur + Gamepad) ----------
@@ -120,6 +123,7 @@ function pollInput(){
   let atkP   = pressedKeys['KeyX'] || pressedKeys['KeyK'] || pressedKeys['KeyF'];
   let bowP   = pressedKeys['KeyC'] || pressedKeys['KeyV'];
   let escP   = pressedKeys['Escape'];
+  let quizConfirmP = pressedKeys['Space'];
 
   const pads = navigator.getGamepads ? navigator.getGamepads() : [];
   for (const gp of pads){
@@ -141,15 +145,18 @@ function pollInput(){
     if (bp(15)) rightP = true;
     if (bp(12)) upP = true;
     if (bp(13)) downP = true;
-    if (bp(0)) jumpP = true;
+    if (bp(0)){ jumpP = true; quizConfirmP = true; }
     if (bp(1) || bp(2)) atkP = true;
     if (bp(3)) bowP = true;
     if (bp(8) || bp(9)) escP = true;
 
-    // Stick-Flanken für Menü-Navigation
+    // Stick-Flanken für Menü-Navigation (horizontal + vertikal)
     if (ax < -0.5 && !(inp._prevAx < -0.5)) leftP = true;
     if (ax >  0.5 && !(inp._prevAx >  0.5)) rightP = true;
+    if (ay < -0.5 && !(inp._prevAy < -0.5)) upP = true;
+    if (ay >  0.5 && !(inp._prevAy >  0.5)) downP = true;
     inp._prevAx = ax;
+    inp._prevAy = ay;
 
     prevPadButtons = gp.buttons.map(x => x.pressed);
     if (jump || atk) initAudio();
@@ -161,6 +168,7 @@ function pollInput(){
   inp.leftP = leftP; inp.rightP = rightP; inp.upP = upP; inp.downP = downP;
   inp.jumpP = jumpP; inp.atkP = atkP; inp.bowP = bowP; inp.escP = escP;
   inp.confirmP = jumpP || atkP;
+  inp.quizP = quizConfirmP || atkP;
 }
 function clearPressed(){ for (const k in pressedKeys) delete pressedKeys[k]; }
 
@@ -461,13 +469,11 @@ function loadWorld(n){
 const COUNT_ITEMS = [['🍎','Äpfel'],['🍓','Erdbeeren'],['⭐','Sterne'],['🎈','Luftballons'],['🐟','Fische'],['🐞','Käfer']];
 const LETTERS = 'ABDEGKLMNOPRSTW'.split('');
 
-function numOptions(correct, max){
-  const set = new Set([correct]);
-  while (set.size < 3){
-    let v = correct + Math.round(rnd(-2, 2));
-    if (v >= 1 && v <= max) set.add(v);
-  }
-  const arr = [...set].sort(() => Math.random() - .5);
+function numOptions(correct, max, count){
+  const pool = [];
+  for (let v = 1; v <= max; v++) if (v !== correct) pool.push(v);
+  pool.sort(() => Math.random() - .5);
+  const arr = [correct, ...pool.slice(0, count - 1)].sort(() => Math.random() - .5);
   return { options: arr.map(String), correct: arr.indexOf(correct) };
 }
 
@@ -476,7 +482,7 @@ function makeTask(type){
     const hard = type === 'count2';
     const n = Math.floor(rnd(hard ? 5 : 3, hard ? 10 : 7));
     const [emo, name] = pick(COUNT_ITEMS);
-    const o = numOptions(n, hard ? 10 : 8);
+    const o = numOptions(n, hard ? 10 : 8, 6);
     return { kind: 'count', emo, n,
       question: 'Wie viele ' + name + '?',
       spoken: 'Wie viele ' + name + ' siehst du? Wähle die richtige Zahl!',
@@ -486,7 +492,7 @@ function makeTask(type){
     const hard = type === 'add2';
     const a = Math.floor(rnd(1, hard ? 6 : 4)), b = Math.floor(rnd(1, hard ? 6 : 4));
     const [emo] = pick(COUNT_ITEMS);
-    const o = numOptions(a + b, hard ? 11 : 8);
+    const o = numOptions(a + b, hard ? 11 : 8, 6);
     return { kind: 'add', emo, a, b,
       question: a + ' + ' + b + ' = ?',
       spoken: 'Wie viel ist ' + a + ' plus ' + b + '?',
@@ -499,7 +505,8 @@ function makeTask(type){
     const seqFull = pick([[a,b,a,b,a,b,a], [a,a,b,b,a,a,b], [a,b,b,a,b,b,a]]);
     const seq = seqFull.slice(0, 6), answer = seqFull[6];
     let c = pick(pool); while (c === a || c === b) c = pick(pool);
-    const options = [a, b, c].sort(() => Math.random() - .5);
+    let d = pick(pool); while (d === a || d === b || d === c) d = pick(pool);
+    const options = [a, b, c, d].sort(() => Math.random() - .5);
     return { kind: 'pattern', seq,
       question: 'Was kommt als Nächstes?',
       spoken: 'Schau dir das Muster genau an! Was kommt als Nächstes?',
@@ -509,9 +516,9 @@ function makeTask(type){
     const cats = [['🍎','🍓','🍌','🍇'], ['🐶','🐱','🐭','🐰'], ['🚗','🚌','🚒','🚜'], ['👕','👖','🧢','🧦']];
     const ci = Math.floor(rnd(0, cats.length));
     let cj = Math.floor(rnd(0, cats.length)); while (cj === ci) cj = Math.floor(rnd(0, cats.length));
-    const same = [...cats[ci]].sort(() => Math.random() - .5).slice(0, 2);
+    const same = [...cats[ci]].sort(() => Math.random() - .5).slice(0, 3);
     const odd = pick(cats[cj]);
-    const options = [same[0], same[1], odd].sort(() => Math.random() - .5);
+    const options = [...same, odd].sort(() => Math.random() - .5);
     return { kind: 'oddone',
       question: 'Was passt nicht dazu?',
       spoken: 'Schau genau! Welches Bild passt nicht zu den anderen?',
@@ -523,7 +530,8 @@ function makeTask(type){
     while (memo.length < 3){ const e = pick(pool); if (!memo.includes(e)) memo.push(e); }
     const idx = Math.floor(rnd(0, 3));
     const words = ['links', 'in der Mitte', 'rechts'];
-    const options = [...memo].sort(() => Math.random() - .5);
+    let extra = pick(pool); while (memo.includes(extra)) extra = pick(pool);
+    const options = [...memo, extra].sort(() => Math.random() - .5);
     return { kind: 'memory', memo,
       question: 'Welches Bild war ' + words[idx] + '?',
       spoken: 'Merk dir die drei Bilder gut!',
@@ -534,7 +542,7 @@ function makeTask(type){
     const a = Math.floor(rnd(4, 10));
     const b = Math.floor(rnd(1, a - 1));
     const [emo] = pick(COUNT_ITEMS);
-    const o = numOptions(a - b, 9);
+    const o = numOptions(a - b, 9, 6);
     return { kind: 'sub', emo, a, b,
       question: a + ' − ' + b + ' = ?',
       spoken: 'Wie viel ist ' + a + ' minus ' + b + '?',
@@ -543,7 +551,7 @@ function makeTask(type){
   // letter
   const target = pick(LETTERS);
   const set = new Set([target]);
-  while (set.size < 3) set.add(pick(LETTERS));
+  while (set.size < 4) set.add(pick(LETTERS));
   const arr = [...set].sort(() => Math.random() - .5);
   return { kind: 'letter', target,
     question: 'Finde das ' + target + '!',
@@ -551,13 +559,25 @@ function makeTask(type){
     options: arr, correct: arr.indexOf(target) };
 }
 
+function startQuestionLock(text, prefix){
+  // Antworten bleiben gesperrt, bis die Frage fertig vorgelesen wurde
+  quiz.sel = -1;
+  quiz.awaitSpeech = true;
+  quiz.minT = 1.2;        // Mindest-Sperre, falls Sprachausgabe sofort endet
+  quiz.failsafeT = 8;     // Notfall-Freigabe, falls kein Sprach-Ende gemeldet wird
+  speak((prefix || '') + text, () => { if (quiz) quiz.awaitSpeech = false; });
+}
+
 function openChest(chest){
   const task = makeTask(chest.task);
-  quiz = { chest, task, sel: 1, phase: task.kind === 'memory' ? 'memorize' : 'ask',
+  quiz = { chest, task, sel: -1, fails: 0, penaltyT: 0,
+           awaitSpeech: false, minT: 0, failsafeT: 0,
+           phase: task.kind === 'memory' ? 'memorize' : 'ask',
            memT: 3.5, shake: 0, doneT: 0 };
   state = 'quiz'; stateT = 0;
   sfx('chest');
-  speak(task.spoken);
+  if (task.kind === 'memory') speak(task.spoken);
+  else startQuestionLock(task.spoken);
 }
 
 const REWARDS = {
@@ -571,10 +591,15 @@ const REWARDS = {
 
 function updateQuiz(dt){
   quiz.shake = Math.max(0, quiz.shake - dt * 3);
+  if (quiz.phase !== 'correct' && inp.escP){
+    quiz.chest.cd = 1.2; quiz = null; state = 'play'; return;
+  }
   if (quiz.phase === 'memorize'){
     quiz.memT -= dt;
-    if (inp.escP){ quiz.chest.cd = 1.2; quiz = null; state = 'play'; return; }
-    if (quiz.memT <= 0){ quiz.phase = 'ask'; speak(quiz.task.spokenAsk); }
+    if (quiz.memT <= 0){
+      quiz.phase = 'ask';
+      startQuestionLock(quiz.task.spokenAsk);
+    }
     return;
   }
   if (quiz.phase === 'correct'){
@@ -590,17 +615,57 @@ function updateQuiz(dt){
     }
     return;
   }
-  if (inp.leftP)  { quiz.sel = (quiz.sel + 2) % 3; sfx('swing'); }
-  if (inp.rightP) { quiz.sel = (quiz.sel + 1) % 3; sfx('swing'); }
-  if (inp.escP){ quiz.chest.cd = 1.2; quiz = null; state = 'play'; return; }
-  if (inp.confirmP){
+
+  // Denkpause nach falscher Antwort
+  if (quiz.penaltyT > 0){
+    quiz.penaltyT = Math.max(0, quiz.penaltyT - dt);
+    if (quiz.penaltyT === 0 && quiz.fails >= 2){
+      // nach 2 Fehlern: neue Frage gleichen Typs
+      quiz.task = makeTask(quiz.chest.task);
+      quiz.fails = 0;
+      if (quiz.task.kind === 'memory'){
+        quiz.phase = 'memorize'; quiz.memT = 3.5; quiz.sel = -1;
+        speak('Hier kommt eine neue Frage! ' + quiz.task.spoken);
+      } else {
+        startQuestionLock(quiz.task.spoken, 'Hier kommt eine neue Frage! ');
+      }
+    }
+    return;
+  }
+
+  // Sperre, bis die Frage fertig vorgelesen wurde
+  quiz.minT = Math.max(0, quiz.minT - dt);
+  quiz.failsafeT = Math.max(0, quiz.failsafeT - dt);
+  if (quiz.failsafeT <= 0) quiz.awaitSpeech = false;
+  if (quiz.awaitSpeech || quiz.minT > 0) return;
+
+  const n = quiz.task.options.length, cols = n === 6 ? 3 : 2;
+  const rows = Math.ceil(n / cols);
+  const selMove = (dx, dy) => {
+    if (quiz.sel < 0){ quiz.sel = 0; sfx('swing'); return; }
+    let row = Math.floor(quiz.sel / cols), col = quiz.sel % cols;
+    col = (col + dx + cols) % cols;
+    row = (row + dy + rows) % rows;
+    quiz.sel = row * cols + col;
+    sfx('swing');
+  };
+  if (inp.leftP) selMove(-1, 0);
+  else if (inp.rightP) selMove(1, 0);
+  else if (inp.upP) selMove(0, -1);
+  else if (inp.downP) selMove(0, 1);
+
+  if (inp.quizP && quiz.sel >= 0){
     if (quiz.sel === quiz.task.correct){
       quiz.phase = 'correct'; quiz.doneT = 0;
       sfx('right');
       speak(REWARDS[quiz.chest.reward].spoken);
     } else {
-      quiz.shake = 1; sfx('wrong');
-      speak('Fast! Probier es noch einmal!');
+      quiz.fails++;
+      quiz.shake = 1; quiz.sel = -1;
+      quiz.penaltyT = 3;
+      sfx('wrong');
+      speak(quiz.fails >= 2 ? 'Das war leider falsch. Gleich kommt eine neue Frage!'
+                            : 'Fast! Denk noch einmal in Ruhe nach!');
     }
   }
 }
@@ -1625,7 +1690,7 @@ function drawQuiz(){
   ctx.fillStyle = 'rgba(10,20,40,.55)';
   ctx.fillRect(0, 0, W, H);
   const q = quiz.task;
-  const cw = 720, ch = 420;
+  const cw = 720, ch = 460;
   let cx = W / 2 - cw / 2, cy = H / 2 - ch / 2;
   if (quiz.shake > 0) cx += Math.sin(quiz.shake * 40) * 8 * quiz.shake;
 
@@ -1671,7 +1736,8 @@ function drawQuiz(){
       text(i < n ? q.seq[i] : '❓', ix, cy + 155, i < n ? 40 : 44);
     }
   } else if (q.kind === 'oddone'){
-    for (let i = 0; i < 3; i++) text(q.options[i], W / 2 - 150 + i * 150, cy + 155, 54);
+    for (let i = 0; i < q.options.length; i++)
+      text(q.options[i], W / 2 - 195 + i * 130, cy + 155, 50);
   } else if (q.kind === 'memory'){
     const xs = [W / 2 - 180, W / 2, W / 2 + 180];
     for (let i = 0; i < 3; i++){
@@ -1695,19 +1761,38 @@ function drawQuiz(){
     ctx.fillStyle = '#5fa8ff'; rrect(W / 2 - 197, cy + ch - 93, 394 * frac, 16, 8); ctx.fill();
     text('Gleich werden die Karten umgedreht…', W / 2, cy + ch - 44, 17, '#8a94a8');
   } else {
-    for (let i = 0; i < 3; i++){
-      const bw2 = 150, bx = W / 2 - 260 + i * 185, by = cy + ch - 118;
-      const sel = quiz.sel === i;
+    const n = q.options.length, cols = n === 6 ? 3 : 2;
+    const bw2 = n === 6 ? 170 : 200, bh = 74, gapX = 22, gapY = 14;
+    const gridW = cols * bw2 + (cols - 1) * gapX;
+    const x0 = W / 2 - gridW / 2, y0 = cy + ch - 2 * bh - gapY - 58;
+    const locked = quiz.awaitSpeech || quiz.minT > 0;
+    const penalty = quiz.penaltyT > 0;
+    for (let i = 0; i < n; i++){
+      const bx = x0 + (i % cols) * (bw2 + gapX);
+      const by = y0 + Math.floor(i / cols) * (bh + gapY);
+      const sel = quiz.sel === i && !locked && !penalty;
+      ctx.globalAlpha = (locked || penalty) ? 0.4 : 1;
       ctx.fillStyle = sel ? '#ffd24a' : '#e9eef7';
-      rrect(bx, by, bw2, 78, 18); ctx.fill();
+      rrect(bx, by, bw2, bh, 16); ctx.fill();
       if (sel){
         ctx.strokeStyle = '#e2731e'; ctx.lineWidth = 5;
-        rrect(bx - 3, by - 3, bw2 + 6, 84, 20); ctx.stroke();
-        textOutline('👉', bx - 26, by + 39, 26);
+        rrect(bx - 3, by - 3, bw2 + 6, bh + 6, 18); ctx.stroke();
+        textOutline('👉', bx - 22, by + bh / 2, 22);
       }
-      text(q.options[i], bx + bw2 / 2, by + 40, 40, sel ? '#7a4a00' : '#33415c');
+      text(q.options[i], bx + bw2 / 2, by + bh / 2 + 1, 34, sel ? '#7a4a00' : '#33415c');
+      ctx.globalAlpha = 1;
     }
-    text('⬅️ ➡️ wählen · Knopf drücken!', W / 2, cy + ch - 18, 15, '#8a94a8');
+    if (penalty){
+      textOutline('🤔', W / 2, y0 + bh + gapY / 2, 36);
+      text('Denk nochmal in Ruhe nach…', W / 2, cy + ch - 20, 17, '#c96a1e');
+    } else if (locked){
+      textOutline('👂', W / 2, y0 + bh + gapY / 2, 36);
+      text('Erst gut zuhören!', W / 2, cy + ch - 20, 17, '#8a94a8');
+    } else if (quiz.sel < 0){
+      text('Wähle mit den Pfeilen eine Antwort aus!', W / 2, cy + ch - 20, 16, '#8a94a8');
+    } else {
+      text('Pfeile: wählen · Knopf: bestätigen', W / 2, cy + ch - 20, 15, '#8a94a8');
+    }
   }
 }
 
