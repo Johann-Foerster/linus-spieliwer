@@ -565,12 +565,14 @@ function startQuestionLock(text, prefix){
   quiz.awaitSpeech = true;
   quiz.minT = 1.2;        // Mindest-Sperre, falls Sprachausgabe sofort endet
   quiz.failsafeT = 8;     // Notfall-Freigabe, falls kein Sprach-Ende gemeldet wird
-  speak((prefix || '') + text, () => { if (quiz) quiz.awaitSpeech = false; });
+  const q = quiz;
+  speak((prefix || '') + text, () => { if (quiz === q) quiz.awaitSpeech = false; });
 }
 
 function openChest(chest){
   const task = makeTask(chest.task);
   quiz = { chest, task, sel: -1, fails: 0, penaltyT: 0,
+           penaltySpeech: false, penaltyFailsafeT: 0,
            awaitSpeech: false, minT: 0, failsafeT: 0,
            phase: task.kind === 'memory' ? 'memorize' : 'ask',
            memT: 3.5, shake: 0, doneT: 0 };
@@ -616,19 +618,22 @@ function updateQuiz(dt){
     return;
   }
 
-  // Denkpause nach falscher Antwort
-  if (quiz.penaltyT > 0){
+  // Denkpause nach falscher Antwort — endet erst, wenn Timer UND Ansage vorbei sind
+  if (quiz.penaltyT > 0 || quiz.penaltySpeech){
     quiz.penaltyT = Math.max(0, quiz.penaltyT - dt);
-    if (quiz.penaltyT === 0 && quiz.fails >= 2){
-      // nach 2 Fehlern: neue Frage gleichen Typs
-      quiz.task = makeTask(quiz.chest.task);
-      quiz.fails = 0;
-      if (quiz.task.kind === 'memory'){
-        quiz.phase = 'memorize'; quiz.memT = 3.5; quiz.sel = -1;
-        speak('Hier kommt eine neue Frage! ' + quiz.task.spoken);
-      } else {
-        startQuestionLock(quiz.task.spoken, 'Hier kommt eine neue Frage! ');
-      }
+    quiz.penaltyFailsafeT = Math.max(0, quiz.penaltyFailsafeT - dt);
+    if (quiz.penaltyFailsafeT <= 0) quiz.penaltySpeech = false;
+    return;
+  }
+  if (quiz.fails >= 2){
+    // nach 2 Fehlern: neue Frage gleichen Typs
+    quiz.task = makeTask(quiz.chest.task);
+    quiz.fails = 0;
+    if (quiz.task.kind === 'memory'){
+      quiz.phase = 'memorize'; quiz.memT = 3.5; quiz.sel = -1;
+      speak('Hier kommt eine neue Frage! ' + quiz.task.spoken);
+    } else {
+      startQuestionLock(quiz.task.spoken, 'Hier kommt eine neue Frage! ');
     }
     return;
   }
@@ -663,9 +668,13 @@ function updateQuiz(dt){
       quiz.fails++;
       quiz.shake = 1; quiz.sel = -1;
       quiz.penaltyT = 3;
+      quiz.penaltySpeech = true;
+      quiz.penaltyFailsafeT = 10;
       sfx('wrong');
+      const q = quiz;
       speak(quiz.fails >= 2 ? 'Das war leider falsch. Gleich kommt eine neue Frage!'
-                            : 'Fast! Denk noch einmal in Ruhe nach!');
+                            : 'Fast! Denk noch einmal in Ruhe nach!',
+            () => { if (quiz === q) quiz.penaltySpeech = false; });
     }
   }
 }
@@ -1766,7 +1775,7 @@ function drawQuiz(){
     const gridW = cols * bw2 + (cols - 1) * gapX;
     const x0 = W / 2 - gridW / 2, y0 = cy + ch - 2 * bh - gapY - 58;
     const locked = quiz.awaitSpeech || quiz.minT > 0;
-    const penalty = quiz.penaltyT > 0;
+    const penalty = quiz.penaltyT > 0 || quiz.penaltySpeech;
     for (let i = 0; i < n; i++){
       const bx = x0 + (i % cols) * (bw2 + gapX);
       const by = y0 + Math.floor(i / cols) * (bh + gapY);
