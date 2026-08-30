@@ -74,6 +74,7 @@ function sfx(name){
     case 'block':   tone(1200,.08,'square',.08,0,800); break;
     case 'glide':   tone(400,.6,'sine',.08,0,700); break;
     case 'bow':     tone(500,.12,'sine',.12,0,950); break;
+    case 'djump':   tone(600,.14,'square',.1,0,1100); break;
   }
 }
 function speak(text){
@@ -191,6 +192,7 @@ const player = {
   hearts: 3, maxHearts: 3, hasShield: false, shieldCharge: 0, shieldMax: 1,
   sword: 1, invuln: 0, attackT: 0, swingId: 0, animT: 0,
   hasParaglider: false, hasBow: false, arrows: 0, bowCd: 0,
+  hasWings: false, airJumped: false, hasKey: false,
 };
 
 function resetPlayerStats(){
@@ -198,6 +200,7 @@ function resetPlayerStats(){
   player.hasShield = false; player.shieldCharge = 0; player.shieldMax = 1;
   player.sword = 1; player.hasParaglider = false;
   player.hasBow = false; player.arrows = 0; player.bowCd = 0;
+  player.hasWings = false; player.airJumped = false; player.hasKey = false;
   player.invuln = 0; player.attackT = 0; player.vx = 0; player.vy = 0;
   stats = { coins: 0, kills: 0 };
 }
@@ -267,7 +270,7 @@ function buildWorld1(){
   return {
     num: 1, name: 'Welt 1 · Himmelsinseln', w: 4400, top: -100, killY: 800,
     platforms, enemies, chests, flags, bosses, decor,
-    pickups: [], coins: [], arrows: [],
+    pickups: [], coins: [], arrows: [], shocks: [],
     spawn: { x: 90, y: 280 }, checkpoint: { x: 90, y: 280 },
     door: null, theme: 'sky',
   };
@@ -310,7 +313,7 @@ function buildWorld2(){
   return {
     num: 2, name: 'Welt 2 · Waldland', w: 3900, top: -420, killY: 720,
     platforms, enemies, chests, flags, bosses: [], decor,
-    pickups: [], coins: [], arrows: [],
+    pickups: [], coins: [], arrows: [], shocks: [],
     spawn: { x: 80, y: 380 }, checkpoint: { x: 80, y: 380 },
     door: { x: 3580, y: -290, w: 70, h: 90, to: 3 }, theme: 'forest',
   };
@@ -372,15 +375,74 @@ function buildWorld3(){
   return {
     num: 3, name: 'Welt 3 · Wolkenschloss', w: 5100, top: -120, killY: 780,
     platforms, enemies, chests, flags, bosses, decor,
-    pickups: [], coins: [], arrows: [],
+    pickups: [], coins: [], arrows: [], shocks: [],
     spawn: { x: 80, y: 320 }, checkpoint: { x: 80, y: 320 },
     door: null, theme: 'castle',
   };
 }
 
+function buildWorld4(){
+  const platforms = [
+    plat(0, 420, 300), plat(580, 420, 240), plat(1100, 400, 220),
+    plat(1620, 340, 200), plat(2100, 420, 260), plat(2660, 380, 300),
+    plat(3220, 400, 520),                       // Arena: Kristallwächter
+    plat(4020, 360, 220), plat(4540, 420, 240),
+    // Aufstieg aus der Höhle (nur mit Doppelsprung)
+    plat(4900, 380, 180), plat(4840, 220, 140), plat(5060, 60, 140),
+    plat(4820, -100, 140), plat(5040, -260, 160),
+    plat(5320, -300, 560),                      // Arena: Höhlenkönig + Ausgang
+  ];
+  const slimeOn = (p, off) => ({ type: 'slime', plat: p, x: p.x + off, y: p.y - 34,
+    w: 44, h: 34, hp: 8, maxHp: 8, dmg: 1, dir: 1, spd: 95, t: rnd(0, 9), swingHit: -1, flash: 0 });
+  const flyer = (x, y, knock, range) => ({ type: 'flyer', ax: x, ay: y, x, y, w: 40, h: 32,
+    hp: 8, maxHp: 8, dmg: 1, t: rnd(0, 9), range: range || 140, knock: knock || 1, swingHit: -1, flash: 0 });
+  const enemies = [
+    slimeOn(platforms[1], 60), slimeOn(platforms[2], 60), slimeOn(platforms[4], 80),
+    slimeOn(platforms[5], 60), slimeOn(platforms[5], 200), slimeOn(platforms[6], 80),
+    slimeOn(platforms[7], 60), slimeOn(platforms[8], 80),
+    flyer(1400, 300), flyer(2350, 330), flyer(3060, 310), flyer(4380, 330),
+    flyer(4950, 150, 1.5, 60), flyer(4930, -180, 1.5, 60),
+  ];
+  const M = platforms[6], E = platforms[14];
+  const bosses = [
+    makeBoss({ name: 'Kristallwächter', icon: '💎', style: 'crystal', drop: 'heartcont',
+      intro: 'Der Kristallwächter!', introSub: 'Er bewacht ein Extra-Herz!',
+      introSay: 'Achtung! Der Kristallwächter! Besiege ihn für ein Extraherz!',
+      x: M.x + 340, y: M.y - 84, w: 100, h: 84, hp: 18, maxHp: 18,
+      groundY: M.y, minX: M.x + 10, maxX: M.x + M.w - 110, spd: 160, spdMad: 230 }),
+    makeBoss({ name: 'Höhlenkönig', icon: '🔮', style: 'cavelord', drop: 'key', shock: true,
+      intro: 'Der Höhlenkönig!', introSub: 'Spring über seine Schockwellen!',
+      introSay: 'Der Höhlenkönig! Wenn er auf den Boden kracht, musst du über seine Schockwellen springen!',
+      x: E.x + 240, y: E.y - 112, w: 140, h: 112, hp: 24, maxHp: 24,
+      groundY: E.y, minX: E.x + 10, maxX: E.x + E.w - 150,
+      spd: 180, spdMad: 250, hopCd: 1.5, hopCdMad: 0.95, jumpV: -600 }),
+  ];
+  const chests = [
+    { x: 2780, y: 346, w: 40, h: 34, task: 'pattern', reward: 'heartup', open: false, cd: 0 },
+    { x: 4080, y: 326, w: 40, h: 34, task: 'oddone', reward: 'arrows10', open: false, cd: 0 },
+    { x: 5100, y: -294, w: 40, h: 34, task: 'memory', reward: 'heartup', open: false, cd: 0 },
+  ];
+  const flags = [
+    { x: 1150, y: 400, active: false }, { x: 2920, y: 380, active: false },
+    { x: 4180, y: 360, active: false }, { x: 4620, y: 420, active: false },
+    { x: 5120, y: 60, active: false }, { x: 5400, y: -300, active: false },
+  ];
+  const decor = [];
+  for (let i = 0; i < 26; i++) decor.push({ kind: 'crystal', x: rnd(0, 5960), y: rnd(-420, 600), s: rnd(.5, 1.4), hue: pick(['#ff7ad0', '#7af0ff', '#b48aff']) });
+  for (let i = 0; i < 18; i++) decor.push({ kind: 'stal', x: rnd(0, 5960), s: rnd(.6, 1.5) });
+  return {
+    num: 4, name: 'Welt 4 · Kristallhöhle', w: 5960, top: -520, killY: 850,
+    platforms, enemies, chests, flags, bosses, decor,
+    pickups: [{ type: 'wings', x: 190, y: 370, w: 40, h: 40, t: 999 }],
+    coins: [], arrows: [], shocks: [],
+    spawn: { x: 60, y: 340 }, checkpoint: { x: 60, y: 340 },
+    door: { x: 5760, y: -390, w: 70, h: 90, needsKey: true, label: 'Ausgang', hintCd: 0 }, theme: 'cave',
+  };
+}
+
 function loadWorld(n){
   worldNum = n;
-  world = n === 1 ? buildWorld1() : n === 2 ? buildWorld2() : buildWorld3();
+  world = n === 1 ? buildWorld1() : n === 2 ? buildWorld2() : n === 3 ? buildWorld3() : buildWorld4();
   player.x = world.spawn.x; player.y = world.spawn.y;
   player.vx = 0; player.vy = 0; player.invuln = 1;
   camX = clamp(player.x - W / 2, 0, world.w - W);
@@ -389,6 +451,7 @@ function loadWorld(n){
     1: ['Finde den Paraglider!', 'Welt eins: Die Himmelsinseln! Finde den Paraglider!'],
     2: ['Klettere hoch zur besseren Welt!', 'Welt zwei: Das Waldland! Klettere hoch zur besseren Welt!'],
     3: ['Besiege die drei Wächter!', 'Welt drei: Das Wolkenschloss! Besiege die drei Wächter des Schlosses!'],
+    4: ['Schnapp dir die Sprungflügel!', 'Welt vier: Die Kristallhöhle! Schnapp dir die Sprungflügel und lerne den Doppelsprung!'],
   };
   showBanner(world.name, subs[n][0], 3.5);
   speak(subs[n][1]);
@@ -429,6 +492,44 @@ function makeTask(type){
       spoken: 'Wie viel ist ' + a + ' plus ' + b + '?',
       options: o.options, correct: o.correct };
   }
+  if (type === 'pattern'){
+    const pool = ['🍎', '⭐', '🎈', '🐟', '🌙', '🍄'];
+    const a = pick(pool);
+    let b = pick(pool); while (b === a) b = pick(pool);
+    const seqFull = pick([[a,b,a,b,a,b,a], [a,a,b,b,a,a,b], [a,b,b,a,b,b,a]]);
+    const seq = seqFull.slice(0, 6), answer = seqFull[6];
+    let c = pick(pool); while (c === a || c === b) c = pick(pool);
+    const options = [a, b, c].sort(() => Math.random() - .5);
+    return { kind: 'pattern', seq,
+      question: 'Was kommt als Nächstes?',
+      spoken: 'Schau dir das Muster genau an! Was kommt als Nächstes?',
+      options, correct: options.indexOf(answer) };
+  }
+  if (type === 'oddone'){
+    const cats = [['🍎','🍓','🍌','🍇'], ['🐶','🐱','🐭','🐰'], ['🚗','🚌','🚒','🚜'], ['👕','👖','🧢','🧦']];
+    const ci = Math.floor(rnd(0, cats.length));
+    let cj = Math.floor(rnd(0, cats.length)); while (cj === ci) cj = Math.floor(rnd(0, cats.length));
+    const same = [...cats[ci]].sort(() => Math.random() - .5).slice(0, 2);
+    const odd = pick(cats[cj]);
+    const options = [same[0], same[1], odd].sort(() => Math.random() - .5);
+    return { kind: 'oddone',
+      question: 'Was passt nicht dazu?',
+      spoken: 'Schau genau! Welches Bild passt nicht zu den anderen?',
+      options, correct: options.indexOf(odd) };
+  }
+  if (type === 'memory'){
+    const pool = ['🍎', '⭐', '🎈', '🐟', '🌙', '🍄', '🐞', '🍓'];
+    const memo = [];
+    while (memo.length < 3){ const e = pick(pool); if (!memo.includes(e)) memo.push(e); }
+    const idx = Math.floor(rnd(0, 3));
+    const words = ['links', 'in der Mitte', 'rechts'];
+    const options = [...memo].sort(() => Math.random() - .5);
+    return { kind: 'memory', memo,
+      question: 'Welches Bild war ' + words[idx] + '?',
+      spoken: 'Merk dir die drei Bilder gut!',
+      spokenAsk: 'Welches Bild war ' + words[idx] + '?',
+      options, correct: options.indexOf(memo[idx]) };
+  }
   if (type === 'sub'){
     const a = Math.floor(rnd(4, 10));
     const b = Math.floor(rnd(1, a - 1));
@@ -451,10 +552,12 @@ function makeTask(type){
 }
 
 function openChest(chest){
-  quiz = { chest, task: makeTask(chest.task), sel: 1, phase: 'ask', shake: 0, doneT: 0 };
+  const task = makeTask(chest.task);
+  quiz = { chest, task, sel: 1, phase: task.kind === 'memory' ? 'memorize' : 'ask',
+           memT: 3.5, shake: 0, doneT: 0 };
   state = 'quiz'; stateT = 0;
   sfx('chest');
-  speak(quiz.task.spoken);
+  speak(task.spoken);
 }
 
 const REWARDS = {
@@ -468,6 +571,12 @@ const REWARDS = {
 
 function updateQuiz(dt){
   quiz.shake = Math.max(0, quiz.shake - dt * 3);
+  if (quiz.phase === 'memorize'){
+    quiz.memT -= dt;
+    if (inp.escP){ quiz.chest.cd = 1.2; quiz = null; state = 'play'; return; }
+    if (quiz.memT <= 0){ quiz.phase = 'ask'; speak(quiz.task.spokenAsk); }
+    return;
+  }
   if (quiz.phase === 'correct'){
     quiz.doneT += dt;
     if (quiz.doneT > 2.2){
@@ -544,7 +653,13 @@ function updatePlayer(dt){
   if (inp.jumpP) p.jumpBuf = 0.15;
   if (p.jumpBuf > 0 && (p.onGround || p.coyote > 0)){
     p.vy = JUMPV; p.onGround = false; p.coyote = 0; p.jumpBuf = 0;
+    p.airJumped = false;
     sfx('jump');
+  } else if (inp.jumpP && !p.onGround && p.coyote <= 0 && p.hasWings && !p.airJumped){
+    // Doppelsprung
+    p.airJumped = true; p.vy = JUMPV * 0.92; p.jumpBuf = 0;
+    burst(p.x + p.w / 2, p.y + p.h, '#bfefff', 10, 150);
+    sfx('djump');
   }
   if (!inp.jump && p.vy < -200) p.vy = -200; // variable Sprunghöhe
 
@@ -583,7 +698,7 @@ function updatePlayer(dt){
     for (const pl of world.platforms){
       if (p.x + p.w > pl.x + 4 && p.x < pl.x + pl.w - 4 &&
           prevBottom <= pl.y + 8 && p.y + p.h >= pl.y && p.y + p.h <= pl.y + pl.h + 18){
-        p.y = pl.y - p.h; p.vy = 0; p.onGround = true;
+        p.y = pl.y - p.h; p.vy = 0; p.onGround = true; p.airJumped = false;
         break;
       }
     }
@@ -675,6 +790,14 @@ function bossDrop(b){
     world.pickups.push({ type: 'paraglider2', x: cx0 - 24, y: b.groundY - 72, w: 48, h: 46, t: 999 });
     showBanner('🎉 ' + b.name + ' besiegt!', 'Der Sturmgleiter gehört dir!', 4);
     speak('Unglaublich! Der ' + b.name + ' ist besiegt! Schnapp dir den Sturmgleiter!');
+  } else if (b.drop === 'heartcont'){
+    world.pickups.push({ type: 'heartcont', x: cx0 - 16, y: b.groundY - 54, w: 32, h: 30, t: 999 });
+    showBanner('🎉 ' + b.name + ' besiegt!', 'Er hat ein Extra-Herz fallen gelassen!', 4);
+    speak('Super! Der ' + b.name + ' ist besiegt! Hol dir das Extraherz!');
+  } else if (b.drop === 'key'){
+    world.pickups.push({ type: 'key', x: cx0 - 18, y: b.groundY - 56, w: 36, h: 32, t: 999 });
+    showBanner('🎉 ' + b.name + ' besiegt!', 'Er hat den Kristall-Schlüssel fallen gelassen!', 4);
+    speak('Jaaa! Der ' + b.name + ' ist besiegt! Schnapp dir den Kristallschlüssel und öffne den Ausgang!');
   }
 }
 
@@ -711,7 +834,13 @@ function updateBosses(dt){
     b.vy += GRAV * 0.8 * dt;
     b.y += b.vy * dt;
     if (b.y + b.h >= b.groundY){
-      if (!b.onGround){ burst(b.x + b.w / 2, b.groundY, '#dfe9f5', 12, 180); sfx('stomp'); }
+      if (!b.onGround){
+        burst(b.x + b.w / 2, b.groundY, '#dfe9f5', 12, 180); sfx('stomp');
+        if (b.shock){
+          world.shocks.push({ x: b.x + b.w / 2, y: b.groundY, vx: 320, t: 2.5, minX: b.minX - 60, maxX: b.maxX + 200 });
+          world.shocks.push({ x: b.x + b.w / 2, y: b.groundY, vx: -320, t: 2.5, minX: b.minX - 60, maxX: b.maxX + 200 });
+        }
+      }
       b.y = b.groundY - b.h; b.vy = 0; b.onGround = true;
     }
     b.jumpCd -= dt;
@@ -731,6 +860,29 @@ function updateBosses(dt){
       hitBoss(b, SWORDS[player.sword].dmg);
     }
     if (!b.dead && overlap(b, player)) hurtPlayer(b.dmg, b.x + b.w / 2);
+  }
+}
+
+// ---------- Schockwellen ----------
+function updateShocks(dt){
+  for (const s of world.shocks){
+    s.t -= dt; s.x += s.vx * dt;
+    if (s.x < s.minX || s.x > s.maxX) s.t = 0;
+    if (s.t > 0 && overlap({ x: s.x - 14, y: s.y - 20, w: 28, h: 20 }, player)) hurtPlayer(1, s.x, 1.2);
+  }
+  world.shocks = world.shocks.filter(s => s.t > 0);
+}
+
+function drawShocks(){
+  for (const s of world.shocks){
+    const x = s.x - camX, y = s.y - camY;
+    ctx.fillStyle = 'rgba(140,240,255,.9)';
+    ctx.beginPath();
+    ctx.moveTo(x - 16, y);
+    ctx.quadraticCurveTo(x, y - 34 - Math.sin(gameT * 20) * 4, x + 16, y);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.6)';
+    ctx.beginPath(); ctx.arc(x, y - 12, 5, 0, 7); ctx.fill();
   }
 }
 
@@ -813,9 +965,9 @@ function updateCoins(dt){
       pu.t = 0;
       player.maxHearts++; player.hearts = player.maxHearts;
       sfx('fanfare');
-      speak('Der Sturmgleiter gehört dir! Und noch ein Extraherz! Jetzt kommt der große Festflug! Festhalten!');
-      showBanner('🪂 Sturmgleiter + ❤️ Extra-Herz!', 'Der große Finale-Flug!', 3);
-      startGlide('win', 'sunset');
+      speak('Der Sturmgleiter gehört dir! Und noch ein Extraherz! Jetzt fliegen wir hinab zur geheimen Kristallhöhle! Festhalten!');
+      showBanner('🪂 Sturmgleiter + ❤️ Extra-Herz!', 'Ab in Welt 4!', 3);
+      startGlide(4, 'sunset');
     } else if (pu.type === 'bow'){
       pu.t = 0;
       player.hasBow = true; player.arrows = 10;
@@ -833,6 +985,24 @@ function updateCoins(dt){
       player.arrows = Math.min(10, player.arrows + pu.n);
       sfx('coin');
       addFloater(pu.x, pu.y - 14, '+' + pu.n + ' 🏹', '#ffd24a');
+    } else if (pu.type === 'wings'){
+      pu.t = 0;
+      player.hasWings = true;
+      sfx('fanfare');
+      speak('Die Sprungflügel gehören dir! Drücke in der Luft noch einmal Springen für den Doppelsprung! Probier es gleich über die große Lücke!');
+      showBanner('🕊️ Sprungflügel!', 'In der Luft nochmal springen = Doppelsprung!', 5);
+    } else if (pu.type === 'heartcont'){
+      pu.t = 0;
+      player.maxHearts++; player.hearts = player.maxHearts;
+      sfx('heart');
+      showBanner('❤️ Extra-Herz!', '', 2.5);
+      speak('Ein Extraherz! Du wirst immer stärker!');
+    } else if (pu.type === 'key'){
+      pu.t = 0;
+      player.hasKey = true;
+      sfx('fanfare');
+      speak('Der Kristallschlüssel! Jetzt kannst du das Tor zum Ausgang öffnen!');
+      showBanner('🗝️ Kristall-Schlüssel!', 'Auf zum Ausgang!', 3.5);
     }
   }
   world.pickups = world.pickups.filter(p => p.t > 0);
@@ -860,9 +1030,24 @@ function updateWorldObjects(dt){
       return;
     }
   }
-  if (world.door && overlap(world.door, player)){
-    sfx('fanfare');
-    loadWorld(world.door.to);
+  if (world.door){
+    world.door.hintCd = Math.max(0, (world.door.hintCd || 0) - dt);
+    if (overlap(world.door, player)){
+      if (world.door.needsKey && !player.hasKey){
+        if (world.door.hintCd <= 0){
+          world.door.hintCd = 3;
+          addFloater(world.door.x + 10, world.door.y - 30, '🗝️ Du brauchst den Schlüssel!', '#ffd24a');
+          speak('Das Tor ist verschlossen! Du brauchst den Kristallschlüssel vom Höhlenkönig!');
+        }
+      } else if (world.door.to){
+        sfx('fanfare');
+        loadWorld(world.door.to);
+      } else {
+        state = 'win'; stateT = 0; banner = null;
+        sfx('fanfare');
+        speak('Fantastisch! Du hast alle vier Welten geschafft! Du bist ein echter Held!');
+      }
+    }
   }
 }
 
@@ -964,6 +1149,8 @@ function drawBackground(){
     g.addColorStop(0, '#5db9f0'); g.addColorStop(0.7, '#a8dcf8'); g.addColorStop(1, '#e8f7ff');
   } else if (world.theme === 'castle'){
     g.addColorStop(0, '#8ea8ff'); g.addColorStop(0.6, '#cdd6ff'); g.addColorStop(1, '#ffe9c4');
+  } else if (world.theme === 'cave'){
+    g.addColorStop(0, '#181230'); g.addColorStop(0.5, '#2c2350'); g.addColorStop(1, '#241d3d');
   } else {
     const climb = clamp((300 - player.y) / 700, 0, 1); // höher = heller
     g.addColorStop(0, lerpColor('#7fc4e8', '#ffd9a0', climb));
@@ -972,9 +1159,11 @@ function drawBackground(){
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
 
-  // Sonne
-  ctx.fillStyle = 'rgba(255,235,130,.9)';
-  ctx.beginPath(); ctx.arc(830 - camX * 0.05, 80 - camY * 0.05, 42, 0, 7); ctx.fill();
+  // Sonne (nicht in der Höhle)
+  if (world.theme !== 'cave'){
+    ctx.fillStyle = 'rgba(255,235,130,.9)';
+    ctx.beginPath(); ctx.arc(830 - camX * 0.05, 80 - camY * 0.05, 42, 0, 7); ctx.fill();
+  }
 
   // Parallax-Deko
   for (const d of world.decor){
@@ -1007,6 +1196,28 @@ function drawBackground(){
         ctx.fill();
         ctx.fillStyle = 'rgba(90,90,140,.5)';
         ctx.fillRect(sx - 8 * d.s, sy - 150 * d.s, 16 * d.s, 26 * d.s);
+      }
+    } else if (d.kind === 'crystal'){
+      const sx = d.x - camX * 0.5, sy = d.y - camY * 0.5;
+      if (sx > -60 && sx < W + 60 && sy > -60 && sy < H + 60){
+        ctx.globalAlpha = 0.35 + Math.sin(gameT * 2 + d.x) * 0.15;
+        ctx.fillStyle = d.hue;
+        ctx.beginPath();
+        ctx.moveTo(sx - 12 * d.s, sy);
+        ctx.lineTo(sx, sy - 34 * d.s);
+        ctx.lineTo(sx + 12 * d.s, sy);
+        ctx.closePath(); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    } else if (d.kind === 'stal'){
+      const sx = d.x - camX * 0.5;
+      if (sx > -40 && sx < W + 40){
+        ctx.fillStyle = 'rgba(60,50,100,.8)';
+        ctx.beginPath();
+        ctx.moveTo(sx - 16 * d.s, -4);
+        ctx.lineTo(sx, 56 * d.s);
+        ctx.lineTo(sx + 16 * d.s, -4);
+        ctx.closePath(); ctx.fill();
       }
     }
   }
@@ -1041,6 +1252,17 @@ function drawPlatform(pl){
     for (let zx = x + 6; zx < x + pl.w - 12; zx += 34) ctx.fillRect(zx, y - 8, 16, 10);
     ctx.fillStyle = '#ffd24a';
     ctx.fillRect(x, y + 12, pl.w, 3);
+  } else if (world.theme === 'cave'){
+    ctx.fillStyle = '#4a3f66';
+    rrect(x, y + 6, pl.w, pl.h + 16, 8); ctx.fill();
+    ctx.fillStyle = '#6b5b96';
+    rrect(x - 3, y, pl.w + 6, 12, 5); ctx.fill();
+    ctx.fillStyle = '#7af0ff';
+    for (let kx = x + 14; kx < x + pl.w - 12; kx += 62){
+      ctx.beginPath();
+      ctx.moveTo(kx, y); ctx.lineTo(kx + 6, y - 10); ctx.lineTo(kx + 12, y);
+      ctx.closePath(); ctx.fill();
+    }
   } else {
     ctx.fillStyle = '#8a6642';
     rrect(x, y + 6, pl.w, pl.h + 14, 8); ctx.fill();
@@ -1089,13 +1311,15 @@ function drawDoor(){
   ctx.fillStyle = 'rgba(255,255,255,' + (0.5 + Math.sin(gameT * 4) * 0.3) + ')';
   rrect(x, y + 10, d.w, d.h - 10, 10); ctx.fill();
   textOutline('✨', x + d.w / 2, y + d.h / 2, 26);
-  textOutline('Welt 3', x + d.w / 2, y - 34, 17, '#fff');
+  textOutline(d.label || 'Welt 3', x + d.w / 2, y - 34, 17, '#fff');
+  if (d.needsKey && !player.hasKey)
+    textOutline('🗝️', x + d.w / 2 + 30, y - 8 + Math.sin(gameT * 3) * 4, 20);
 }
 
 function drawSlime(e){
   const x = e.x - camX, y = e.y - camY;
   const squish = 1 + Math.sin(e.t * 9) * 0.08;
-  ctx.fillStyle = e.flash > 0 ? '#fff' : (world.theme === 'sky' ? '#79d84f' : world.theme === 'castle' ? '#8f9fd6' : '#e2733e');
+  ctx.fillStyle = e.flash > 0 ? '#fff' : (world.theme === 'sky' ? '#79d84f' : world.theme === 'castle' ? '#8f9fd6' : world.theme === 'cave' ? '#5fd0c8' : '#e2733e');
   ctx.beginPath();
   ctx.ellipse(x + e.w / 2, y + e.h - e.h / 2 * squish, e.w / 2, e.h / 2 * squish, 0, 0, 7);
   ctx.fill();
@@ -1139,6 +1363,8 @@ const BOSS_STYLES = {
   cloud:  { body: '#e8eef7', puff: '#c8d4e8', face: '#33415c', crown: true },
   knight: { body: '#9aabce', puff: '#7e90b5', face: '#2d3a52', helmet: true },
   storm:  { body: '#5d6b80', puff: '#48566b', face: '#ffd24a', crown: true, bolt: true },
+  crystal:{ body: '#b57ae0', puff: '#9055c8', face: '#2b1e42', shards: true },
+  cavelord:{ body: '#544a72', puff: '#453c60', face: '#9fe8ff', crown: true, gem: true },
 };
 
 function drawBossBody(b){
@@ -1178,6 +1404,19 @@ function drawBossBody(b){
     ctx.fill();
   }
   if (s.bolt) textOutline('⚡', x + b.w / 2, y + b.h - 24, 26);
+  if (s.gem) textOutline('💎', x + b.w / 2, y + b.h - 26, 26);
+  if (s.shards){
+    const cols = ['#7af0ff', '#ff7ad0', '#7af0ff'];
+    for (let i = 0; i < 3; i++){
+      const sx0 = x + b.w / 2 + (i - 1) * b.w * 0.2;
+      ctx.fillStyle = cols[i];
+      ctx.beginPath();
+      ctx.moveTo(sx0 - 8, topY + 8);
+      ctx.lineTo(sx0, topY - 18 - (i === 1 ? 8 : 0));
+      ctx.lineTo(sx0 + 8, topY + 8);
+      ctx.closePath(); ctx.fill();
+    }
+  }
   // böse Augen
   const eyeY = y + b.h * 0.44;
   ctx.fillStyle = s.face;
@@ -1291,6 +1530,19 @@ function drawPickups(){
       textOutline('🛡️', x + 20, y + 20, 34);
     } else if (pu.type === 'arrows'){
       textOutline('🏹', x + 13, y + 11, 20);
+    } else if (pu.type === 'wings'){
+      ctx.fillStyle = 'rgba(200,240,255,' + (0.35 + Math.sin(gameT * 5) * 0.2) + ')';
+      ctx.beginPath(); ctx.arc(x + 20, y + 20, 40, 0, 7); ctx.fill();
+      textOutline('🕊️', x + 20, y + 20, 32);
+      textOutline('✨', x + 42, y - 2, 16);
+    } else if (pu.type === 'heartcont'){
+      ctx.fillStyle = 'rgba(255,150,170,' + (0.3 + Math.sin(gameT * 5) * 0.2) + ')';
+      ctx.beginPath(); ctx.arc(x + 16, y + 14, 34, 0, 7); ctx.fill();
+      textOutline('❤️', x + 16, y + 14, 30);
+    } else if (pu.type === 'key'){
+      ctx.fillStyle = 'rgba(255,220,120,' + (0.35 + Math.sin(gameT * 5) * 0.2) + ')';
+      ctx.beginPath(); ctx.arc(x + 18, y + 16, 36, 0, 7); ctx.fill();
+      textOutline('🗝️', x + 18, y + 16, 30);
     }
   }
   for (const c of world.coins){
@@ -1383,7 +1635,7 @@ function drawQuiz(){
   rrect(cx, cy, cw, ch, 24); ctx.stroke();
 
   text('🔑 Truhen-Rätsel', W / 2, cy + 36, 20, '#e2731e');
-  text(q.question, W / 2, cy + 78, 30, '#33415c');
+  text(quiz.phase === 'memorize' ? 'Gut merken! 👀' : q.question, W / 2, cy + 78, 30, '#33415c');
 
   // Aufgabendarstellung
   if (q.kind === 'count'){
@@ -1412,6 +1664,21 @@ function drawQuiz(){
       text(q.emo, ix, iy, 40);
       if (i >= q.a - q.b) text('❌', ix, iy, 40);
     }
+  } else if (q.kind === 'pattern'){
+    const n = q.seq.length;
+    for (let i = 0; i <= n; i++){
+      const ix = W / 2 - n * 28 + i * 56;
+      text(i < n ? q.seq[i] : '❓', ix, cy + 155, i < n ? 40 : 44);
+    }
+  } else if (q.kind === 'oddone'){
+    for (let i = 0; i < 3; i++) text(q.options[i], W / 2 - 150 + i * 150, cy + 155, 54);
+  } else if (q.kind === 'memory'){
+    const xs = [W / 2 - 180, W / 2, W / 2 + 180];
+    for (let i = 0; i < 3; i++){
+      ctx.fillStyle = '#e9eef7';
+      rrect(xs[i] - 44, cy + 112, 88, 88, 14); ctx.fill();
+      text(quiz.phase === 'memorize' ? q.memo[i] : '🎴', xs[i], cy + 155, 50);
+    }
   } else {
     text('Welcher Buchstabe ist das?', W / 2, cy + 120, 16, '#8a94a8');
     text(q.target, W / 2, cy + 170, 66, '#5fa8ff');
@@ -1422,6 +1689,11 @@ function drawQuiz(){
     text('🎉 RICHTIG! 🎉', W / 2, cy + ch - 90, 40, '#3cab52');
     const r = REWARDS[quiz.chest.reward];
     text(r.icon + ' ' + r.text, W / 2, cy + ch - 42, 24, '#e2731e');
+  } else if (quiz.phase === 'memorize'){
+    const frac = clamp(quiz.memT / 3.5, 0, 1);
+    ctx.fillStyle = '#e9eef7'; rrect(W / 2 - 200, cy + ch - 96, 400, 22, 10); ctx.fill();
+    ctx.fillStyle = '#5fa8ff'; rrect(W / 2 - 197, cy + ch - 93, 394 * frac, 16, 8); ctx.fill();
+    text('Gleich werden die Karten umgedreht…', W / 2, cy + ch - 44, 17, '#8a94a8');
   } else {
     for (let i = 0; i < 3; i++){
       const bw2 = 150, bx = W / 2 - 260 + i * 185, by = cy + ch - 118;
@@ -1467,14 +1739,18 @@ function drawGlide(){
     textOutline('🪙', c.x, sy, 30);
   }
 
-  // Boden kommt in Sicht (nur bei Landung in Welt 2)
+  // Boden kommt in Sicht
   if (glide.next !== 'win'){
     const groundY = 170 + (glide.endY + 220 - glide.gy);
     if (groundY < H + 200){
-      ctx.fillStyle = '#57b04a';
+      ctx.fillStyle = glide.next === 2 ? '#57b04a' : '#4a3f66';
       ctx.beginPath();
       ctx.ellipse(W / 2, groundY + 300, 700, 330, 0, 0, 7);
       ctx.fill();
+      if (glide.next === 4){
+        ctx.fillStyle = '#181230';
+        ctx.beginPath(); ctx.ellipse(W / 2, groundY + 90, 180, 70, 0, 0, 7); ctx.fill();
+      }
     }
   }
 
@@ -1518,7 +1794,7 @@ function drawGlide(){
     ctx.stroke();
   }
 
-  textOutline(sunset ? '🪂⚡ Der große Finale-Flug!' : '🪂 Flieg zu Welt 2!', W / 2, 40, 24);
+  textOutline(sunset ? '🪂⚡ Flieg zur Kristallhöhle!' : '🪂 Flieg zu Welt 2!', W / 2, 40, 24);
   textOutline('🪙 ' + stats.coins, W - 60, 28, 20);
   // Fortschrittsbalken
   ctx.fillStyle = 'rgba(0,0,0,.3)'; rrect(W - 34, 80, 14, 380, 7); ctx.fill();
@@ -1575,11 +1851,11 @@ function drawWin(){
     text(['🎉','⭐','🎊','✨'][i % 4], fx, fy, 20 + i % 3 * 8);
   }
   textOutline('GESCHAFFT! 🏆', W / 2, 130, 64, '#ffd24a');
-  text('Du hast alle drei Welten gemeistert!', W / 2, 200, 26, '#fff');
+  text('Du hast alle vier Welten gemeistert!', W / 2, 200, 26, '#fff');
   const s = SWORDS[player.sword];
   text('🪙 ' + stats.coins + ' Münzen      👾 ' + stats.kills + ' Monster besiegt', W / 2, 270, 24, '#fff');
   text('⚔️ ' + s.name + (player.hasBow ? '  ·  🏹 Bogen' : '') + '      ❤️ ' + player.maxHearts + ' Herzen', W / 2, 310, 24, '#fff');
-  text('Welt 4 kommt bald… 🌊', W / 2, 380, 22, '#7fd0ff');
+  text('Welt 5 kommt bald… 🌊', W / 2, 380, 22, '#7fd0ff');
   if (stateT > 1.5 && Math.floor(gameT * 1.4) % 2 === 0)
     textOutline('Knopf drücken für nochmal!', W / 2, 460, 24);
 }
@@ -1605,10 +1881,20 @@ function drawWorld(){
     if (e.type === 'slime') drawSlime(e); else drawFlyer(e);
   }
   drawBosses();
+  drawShocks();
   drawPickups();
   drawArrows();
   drawPlayer();
   drawFx();
+  if (world.theme === 'cave'){
+    // sanftes Höhlendunkel mit Lichtkreis um den Helden
+    const px = player.x + player.w / 2 - camX, py = player.y + 20 - camY;
+    const rg = ctx.createRadialGradient(px, py, 110, px, py, 400);
+    rg.addColorStop(0, 'rgba(10,8,28,0)');
+    rg.addColorStop(1, 'rgba(10,8,28,0.5)');
+    ctx.fillStyle = rg;
+    ctx.fillRect(0, 0, W, H);
+  }
   drawHUD();
   drawBanner();
 }
@@ -1641,6 +1927,7 @@ function loop(now){
       updateEnemies(dt);
       updateBosses(dt);
       updateArrows(dt);
+      updateShocks(dt);
       updateCoins(dt);
       updateWorldObjects(dt);
     }
