@@ -320,7 +320,7 @@ function numOptions(correct, max){
     if (v >= 1 && v <= max) set.add(v);
   }
   const arr = [...set].sort(() => Math.random() - .5);
-  return { options: arr.map(String), correct: arr.indexOf(correct + '') };
+  return { options: arr.map(String), correct: arr.indexOf(correct) };
 }
 
 function makeTask(type){
