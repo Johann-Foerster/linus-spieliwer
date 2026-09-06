@@ -18,6 +18,8 @@
 // ============================================================
 //  SPIELIWER — ein Spiel von Linus & Papa
 //  Welt 1: Himmelsinseln  ->  Paraglider  ->  Welt 2: Waldland
+//  Welt 3: Wolkenschloss  ->  Welt 4: Kristallhöhle  ->  Welt 5: Roboter-Stadt (Wand-Hochkletterer)
+//  Test: F5 = eine Welt zurück, F6 = eine Welt vor (Upgrades werden passend gesetzt/entfernt)
 // ============================================================
 
 const cvs = document.getElementById('game');
@@ -75,6 +77,9 @@ function sfx(name){
     case 'glide':   tone(400,.6,'sine',.08,0,700); break;
     case 'bow':     tone(500,.12,'sine',.12,0,950); break;
     case 'djump':   tone(600,.14,'square',.1,0,1100); break;
+    case 'grab':    tone(180, .08, 'square', .09, 0, 420); break;
+    case 'laser':   tone(1100, .16, 'sawtooth', .1, 0, 300); break;
+    case 'robo':    [300,450,600,900].forEach((f,i)=>tone(f,.12,'square',.1,i*.08)); break;
   }
 }
 function speak(text, onDone){
@@ -95,7 +100,7 @@ const keys = {}, pressedKeys = {};
 addEventListener('keydown', e => {
   if (!e.repeat) pressedKeys[e.code] = true;
   keys[e.code] = true;
-  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','F5','F6'].includes(e.code)) e.preventDefault();
   initAudio();
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
@@ -120,6 +125,7 @@ function pollInput(){
   let upP    = pressedKeys['ArrowUp'] || pressedKeys['KeyW'];
   let downP  = pressedKeys['ArrowDown'] || pressedKeys['KeyS'];
   let jumpP  = pressedKeys['Space'] || pressedKeys['ArrowUp'] || pressedKeys['KeyW'];
+  let jumpBtnP = pressedKeys['Space'];   // nur der echte Sprungknopf (ohne Hoch-Taste) — fürs Abspringen von Wänden
   let atkP   = pressedKeys['KeyX'] || pressedKeys['KeyK'] || pressedKeys['KeyF'];
   let bowP   = pressedKeys['KeyC'] || pressedKeys['KeyV'];
   let escP   = pressedKeys['Escape'];
@@ -145,7 +151,7 @@ function pollInput(){
     if (bp(15)) rightP = true;
     if (bp(12)) upP = true;
     if (bp(13)) downP = true;
-    if (bp(0)){ jumpP = true; quizConfirmP = true; }
+    if (bp(0)){ jumpP = true; jumpBtnP = true; quizConfirmP = true; }
     if (bp(1) || bp(2)) atkP = true;
     if (bp(3)) bowP = true;
     if (bp(8) || bp(9)) escP = true;
@@ -166,7 +172,7 @@ function pollInput(){
   inp.left = left; inp.right = right; inp.up = up; inp.down = down;
   inp.jump = jump; inp.atk = atk; inp.bow = bowHeld;
   inp.leftP = leftP; inp.rightP = rightP; inp.upP = upP; inp.downP = downP;
-  inp.jumpP = jumpP; inp.atkP = atkP; inp.bowP = bowP; inp.escP = escP;
+  inp.jumpP = jumpP; inp.jumpBtnP = jumpBtnP; inp.atkP = atkP; inp.bowP = bowP; inp.escP = escP;
   inp.confirmP = jumpP || atkP;
   inp.quizP = quizConfirmP || atkP;
 }
@@ -182,6 +188,8 @@ const SWORDS = [
   { name: 'Diamantschwert', color: '#1fa8b8', blade: '#7df0ff', dmg: 4 },
 ];
 const BOW_DMG = 3;
+const CLIMB = 170;        // Klettertempo des Wand-Hochkletterers (px/s)
+const WORLD_COUNT = 5;
 
 // ---------- Globale Zustände ----------
 let state = 'title', stateT = 0;
@@ -201,7 +209,16 @@ const player = {
   sword: 1, invuln: 0, attackT: 0, swingId: 0, animT: 0,
   hasParaglider: false, hasBow: false, arrows: 0, bowCd: 0,
   hasWings: false, airJumped: false, hasKey: false,
+  // Welt 5: Der Held steuert den Wand-Hochkletterer (Roboter-Auto)
+  form: 'hero', cling: 0, climbT: 0, hasChip: false,
 };
+
+function setForm(f){
+  player.form = f;
+  if (f === 'car'){ player.w = 80; player.h = 60; }
+  else            { player.w = 32; player.h = 44; }
+  player.cling = 0; player.climbT = 0;
+}
 
 function resetPlayerStats(){
   player.hearts = 3; player.maxHearts = 3;
@@ -209,6 +226,7 @@ function resetPlayerStats(){
   player.sword = 1; player.hasParaglider = false;
   player.hasBow = false; player.arrows = 0; player.bowCd = 0;
   player.hasWings = false; player.airJumped = false; player.hasKey = false;
+  player.hasChip = false; setForm('hero');
   player.invuln = 0; player.attackT = 0; player.vx = 0; player.vy = 0;
   stats = { coins: 0, kills: 0 };
 }
@@ -444,15 +462,136 @@ function buildWorld4(){
     pickups: [{ type: 'wings', x: 190, y: 370, w: 40, h: 40, t: 999 }],
     coins: [], arrows: [], shocks: [],
     spawn: { x: 60, y: 340 }, checkpoint: { x: 60, y: 340 },
-    door: { x: 5760, y: -390, w: 70, h: 90, needsKey: true, label: 'Ausgang', hintCd: 0 }, theme: 'cave',
+    door: { x: 5760, y: -390, w: 70, h: 90, needsKey: true, label: 'Welt 5', to: 5, hintCd: 0 }, theme: 'cave',
   };
+}
+
+function wall(x, y, w, h){ return { x, y, w, h, wall: true }; }
+
+function buildWorld5(){
+  // Roboter-Stadt: Der Held wird zum Wand-Hochkletterer (Spion-Roboterauto, Hitbox 80x60).
+  // Boden liegt auf y=460, Kletterwände sperren den Weg und müssen erklommen werden.
+  // Alle Gegner, Laser und Schockwellen ziehen hier 2 Herzen ab.
+  const platforms = [
+    plat(0, 460, 640),                          // 0 Start
+    plat(760, 460, 1000),                       // 1 Boden B (Laser-Gasse 1)
+    plat(860, 300, 160),                        // 2 Truhen-Podest hinter Wand 1
+    plat(1100, 380, 140),                       // 3 Stufe
+    plat(1890, 460, 1210),                      // 4 Boden C
+    plat(1980, 80, 150),                        // 5 Hochroute vom Turm
+    plat(2210, 140, 150),                       // 6
+    plat(2440, 300, 150),                       // 7 Abstieg (Truhe)
+    plat(3220, 460, 1240),                      // 8 Boden D (Laser-Gasse 2)
+    plat(3320, -60, 160),                       // 9 Dach hinter dem Schacht (Truhe)
+    plat(3560, 20, 160),                        // 10
+    plat(3800, 120, 140),                       // 11
+    plat(4000, 240, 140),                       // 12 (Truhe)
+    plat(4570, 460, 750),                       // 13 Arena: Chef-Roboter
+    plat(5430, 460, 470),                       // 14 Geheimtür
+  ];
+  const walls = [
+    wall(640, 250, 120, 210),                   // 0 erste Kletterwand
+    wall(1760, 40, 130, 420),                   // 1 Turm
+    wall(3100, -120, 120, 580),                 // 2 Schacht
+    wall(4460, 340, 110, 120),                  // 3 kleine Mauer vor der Arena
+    wall(5320, 260, 110, 200),                  // 4 Mauer hinter der Arena (Schutz vor Schockwellen)
+  ];
+  // Laser: senkrecht (x1 === x2) als Schranke am Boden, waagerecht als Hindernis beim Klettern.
+  // mount = Seite, an der die Laserkanone an der Wand hängt.
+  const lasers = [
+    { x1: 1400, y1: 300, x2: 1400, y2: 460, period: 2.6, offset: 0, dmg: 2 },
+    { x1: 1600, y1: 300, x2: 1600, y2: 460, period: 2.6, offset: 1.3, dmg: 2 },
+    { x1: 1630, y1: 260, x2: 1760, y2: 260, period: 2.6, offset: 0.6, dmg: 2, mount: 'right' },   // Turm, linke Seite
+    { x1: 2970, y1: 200, x2: 3100, y2: 200, period: 2.8, offset: 0, dmg: 2, mount: 'right' },     // Schacht, linke Seite
+    { x1: 2970, y1: -20, x2: 3100, y2: -20, period: 2.8, offset: 1.4, dmg: 2, mount: 'right' },
+    { x1: 3220, y1: 160, x2: 3350, y2: 160, period: 2.6, offset: 0.4, dmg: 2, mount: 'left' },    // Schacht, rechte Seite
+    { x1: 4200, y1: 300, x2: 4200, y2: 460, period: 2.2, offset: 0, dmg: 2 },
+    { x1: 4350, y1: 300, x2: 4350, y2: 460, period: 2.2, offset: 1.1, dmg: 2 },
+  ];
+  // Wach-Roboter (Bodenpatrouille, nutzt die Slime-Logik) und Drohnen (nutzen die Flyer-Logik)
+  const botOn = (p, off) => ({ type: 'slime', plat: p, x: p.x + off, y: p.y - 36,
+    w: 46, h: 36, hp: 10, maxHp: 10, dmg: 2, dir: 1, spd: 70, t: rnd(0, 9), swingHit: -1, flash: 0 });
+  const drone = (x, y, knock, range) => ({ type: 'flyer', ax: x, ay: y, x, y, w: 40, h: 30,
+    hp: 8, maxHp: 8, dmg: 2, t: rnd(0, 9), range: range || 120, knock: knock || 1, swingHit: -1, flash: 0 });
+  const enemies = [
+    botOn(platforms[0], 380), botOn(platforms[1], 300),
+    botOn(platforms[4], 300), botOn(platforms[4], 800),
+    botOn(platforms[10], 40),
+    botOn(platforms[8], 200), botOn(platforms[8], 900),
+    botOn(platforms[13], 100),
+    drone(1650, 110, 1, 40), drone(2320, 30, 1, 100),
+    drone(3020, 90, 1, 30), drone(3760, 40, 1, 120), drone(4900, 330, 1, 120),
+  ];
+  const A = platforms[13];
+  const bosses = [
+    makeBoss({ name: 'Chef-Roboter', icon: '🤖', style: 'robot', drop: 'chip', shock: true, dmg: 2,
+      intro: 'Der Chef-Roboter!', introSub: 'Er bewacht den Geheim-Chip!',
+      introSay: 'Achtung! Der Chef-Roboter! Er bewacht den Geheimchip! Spring über seine Schockwellen oder klettere die Mauer hoch!',
+      x: A.x + 500, y: A.y - 110, w: 130, h: 110, hp: 30, maxHp: 30,
+      groundY: A.y, minX: A.x + 10, maxX: A.x + A.w - 140,
+      spd: 190, spdMad: 260, hopCd: 1.5, hopCdMad: 0.9, jumpV: -600 }),
+  ];
+  const chests = [
+    { x: 920, y: 266, w: 40, h: 34, task: 'add3', reward: 'heartup', open: false, cd: 0 },
+    { x: 2490, y: 266, w: 40, h: 34, task: 'firstletter', reward: 'arrows10', open: false, cd: 0 },
+    { x: 3380, y: -94, w: 40, h: 34, task: 'numseq', reward: 'heartup', open: false, cd: 0 },
+    { x: 4050, y: 206, w: 40, h: 34, task: 'sub2', reward: 'arrows10', open: false, cd: 0 },
+  ];
+  const flags = [
+    { x: 700, y: 250, active: false },  { x: 2040, y: 80, active: false },
+    { x: 2900, y: 460, active: false }, { x: 3640, y: 20, active: false },
+    { x: 4400, y: 460, active: false },
+  ];
+  const decor = [];
+  for (let i = 0; i < 40; i++) decor.push({ kind: 'star', x: rnd(0, 6000), y: rnd(-500, 300), s: rnd(1, 2.5) });
+  for (let i = 0; i < 22; i++) decor.push({ kind: 'building', x: rnd(-200, 6100), w: rnd(60, 160), h: rnd(120, 360), hue: pick(['#1b2140', '#232a52', '#2d2a5e']) });
+  for (let i = 0; i < 5; i++) decor.push({ kind: 'spot', x: rnd(200, 5800), spd: rnd(.4, .8), phase: rnd(0, 6) });
+  return {
+    num: 5, name: 'Welt 5 · Roboter-Stadt', w: 5900, top: -460, killY: 760, form: 'car',
+    platforms, walls, lasers, enemies, chests, flags, bosses, decor,
+    pickups: [], coins: [], arrows: [], shocks: [],
+    spawn: { x: 60, y: 400 }, checkpoint: { x: 60, y: 400 },
+    door: { x: 5720, y: 370, w: 70, h: 90, needsChip: true, label: 'Geheimtür', hintCd: 0 }, theme: 'city',
+  };
+}
+
+// ---------- Test-Funktion: Welt vor/zurück springen (F5 / F6) ----------
+// Beute, die man nach dem Durchspielen der jeweiligen Welt normalerweise besitzt.
+const WORLD_LOOT = {
+  1(){ player.sword = 3; player.hasShield = true; player.shieldMax = 1; player.shieldCharge = 1;
+       player.hasParaglider = true; player.maxHearts += 1; },
+  2(){ player.sword = 4; player.maxHearts += 1; },
+  3(){ player.hasBow = true; player.arrows = 10; player.hasShield = true; player.shieldMax = 2; player.shieldCharge = 2;
+       player.maxHearts += 3; },
+  4(){ player.hasWings = true; player.hasKey = true; player.maxHearts += 3; },
+};
+function applyLootUpTo(n){
+  for (let k = 1; k < n; k++) if (WORLD_LOOT[k]) WORLD_LOOT[k]();
+  player.hearts = player.maxHearts;
+}
+function debugJumpWorld(delta){
+  const cur = world ? worldNum : 0;
+  if (!world && delta < 0) return;
+  const target = clamp(cur + delta, 1, WORLD_COUNT);
+  if (target === cur) return;
+  resetPlayerStats();
+  applyLootUpTo(target);
+  particles = []; floaters = []; quiz = null; glide = null; banner = null;
+  loadWorld(target);
+  state = 'play'; stateT = 0;
+  addFloater(player.x - 20, player.y - 40, '🛠️ Test: Welt ' + target, '#ffd24a');
 }
 
 function loadWorld(n){
   worldNum = n;
-  world = n === 1 ? buildWorld1() : n === 2 ? buildWorld2() : n === 3 ? buildWorld3() : buildWorld4();
+  world = n === 1 ? buildWorld1() : n === 2 ? buildWorld2() : n === 3 ? buildWorld3() : n === 4 ? buildWorld4() : buildWorld5();
+  setForm(world.form || 'hero');
   player.x = world.spawn.x; player.y = world.spawn.y;
   player.vx = 0; player.vy = 0; player.invuln = 1;
+  if (world.form === 'car'){
+    sfx('robo');
+    burst(player.x + player.w / 2, player.y + player.h / 2, '#9fe8ff', 30, 300);
+  }
   camX = clamp(player.x - W / 2, 0, world.w - W);
   camY = clamp(player.y - H * 0.55, world.top, world.killY - H);
   const subs = {
@@ -460,6 +599,7 @@ function loadWorld(n){
     2: ['Klettere hoch zur besseren Welt!', 'Welt zwei: Das Waldland! Klettere hoch zur besseren Welt!'],
     3: ['Besiege die drei Wächter!', 'Welt drei: Das Wolkenschloss! Besiege die drei Wächter des Schlosses!'],
     4: ['Schnapp dir die Sprungflügel!', 'Welt vier: Die Kristallhöhle! Schnapp dir die Sprungflügel und lerne den Doppelsprung!'],
+    5: ['Du bist jetzt der Wand-Hochkletterer!', 'Welt fünf: Die Roboterstadt! Du bist jetzt der Wandhochkletterer, ein geheimer Spion! Halte dich an Wänden fest und klettere mit Hoch und Runter! Mit der Leertaste springst du von der Wand ab!'],
   };
   showBanner(world.name, subs[n][0], 3.5);
   speak(subs[n][1]);
@@ -467,7 +607,23 @@ function loadWorld(n){
 
 // ---------- Quiz (Lern-Aufgaben) ----------
 const COUNT_ITEMS = [['🍎','Äpfel'],['🍓','Erdbeeren'],['⭐','Sterne'],['🎈','Luftballons'],['🐟','Fische'],['🐞','Käfer']];
-const LETTERS = 'ABDEGKLMNOPRSTW'.split('');
+const LETTERS = 'ABDEFGHIKLMNOPRSTWZ'.split('');
+
+const WORDS = [
+  ['🍎','Apfel'], ['🍌','Banane'], ['🤖','Roboter'], ['🚗','Auto'], ['🐭','Maus'], ['☀️','Sonne'],
+  ['🐘','Elefant'], ['🐶','Hund'], ['🐱','Katze'], ['🦁','Löwe'], ['🐴','Pferd'], ['🍅','Tomate'],
+  ['☁️','Wolke'], ['🦓','Zebra'], ['🐟','Fisch'], ['🦔','Igel'], ['⚽','Ball'], ['🐉','Drache'],
+  ['🎸','Gitarre'], ['👃','Nase'], ['🔑','Schlüssel'], ['🌙','Mond'], ['🍓','Erdbeere'], ['🐸','Frosch'],
+];
+
+// Antwortzahlen rund um die richtige Lösung (schwerer als zufällige Zahlen)
+function nearOptions(correct, count, min, max){
+  const pool = [];
+  for (let v = Math.max(min, correct - 5); v <= Math.min(max, correct + 5); v++) if (v !== correct) pool.push(v);
+  pool.sort(() => Math.random() - .5);
+  const arr = [correct, ...pool.slice(0, count - 1)].sort((a, b) => a - b);
+  return { options: arr.map(String), correct: arr.indexOf(correct) };
+}
 
 function numOptions(correct, max, count){
   const pool = [];
@@ -537,6 +693,45 @@ function makeTask(type){
       spoken: 'Merk dir die drei Bilder gut!',
       spokenAsk: 'Welches Bild war ' + words[idx] + '?',
       options, correct: options.indexOf(memo[idx]) };
+  }
+  if (type === 'add3' || type === 'sub2'){
+    // Kopfrechnen bis 20, ohne Bildchen
+    let a, b, res, sym;
+    if (type === 'add3'){ a = Math.floor(rnd(5, 13)); b = Math.floor(rnd(3, 10)); res = a + b; sym = '+'; }
+    else { a = Math.floor(rnd(11, 21)); b = Math.floor(rnd(2, 10)); res = a - b; sym = '−'; }
+    const o = nearOptions(res, 6, 1, 20);
+    return { kind: 'calc', a, b, sym,
+      question: 'Kopfrechnen! Wie viel ist das?',
+      spoken: 'Kopfrechnen! Wie viel ist ' + a + (sym === '+' ? ' plus ' : ' minus ') + b + '?',
+      options: o.options, correct: o.correct };
+  }
+  if (type === 'numseq'){
+    // Zahlenreihe fortsetzen
+    const kind = pick(['up1', 'up2', 'up10', 'down1', 'up5']);
+    let start, step;
+    if (kind === 'up1'){ start = Math.floor(rnd(1, 12)); step = 1; }
+    else if (kind === 'up2'){ start = pick([1, 2, 3, 4, 6, 8]); step = 2; }
+    else if (kind === 'up5'){ start = pick([5, 10]); step = 5; }
+    else if (kind === 'up10'){ start = 10; step = 10; }
+    else { start = Math.floor(rnd(7, 13)); step = -1; }
+    const seq = [0, 1, 2, 3].map(i => start + i * step);
+    const answer = start + 4 * step;
+    const o = nearOptions(answer, 6, 1, 99);
+    return { kind: 'numseq', seq,
+      question: 'Wie geht es weiter?',
+      spoken: 'Schau dir die Zahlenreihe an: ' + seq.join(', ') + '. Welche Zahl kommt als Nächstes?',
+      options: o.options, correct: o.correct };
+  }
+  if (type === 'firstletter'){
+    const [emo, word] = pick(WORDS);
+    const target = word[0];
+    const set = new Set([target]);
+    while (set.size < 4) set.add(pick(LETTERS));
+    const arr = [...set].sort(() => Math.random() - .5);
+    return { kind: 'firstletter', emo, word, target,
+      question: 'Mit welchem Buchstaben beginnt „' + word + '“?',
+      spoken: 'Mit welchem Buchstaben beginnt das Wort ' + word + '?',
+      options: arr, correct: arr.indexOf(target) };
   }
   if (type === 'sub'){
     const a = Math.floor(rnd(4, 10));
@@ -685,7 +880,7 @@ function hurtPlayer(dmg, fromX, knock){
   const k = knock || 1;
   const dir = player.x + player.w / 2 < fromX ? -1 : 1;
   player.vx = dir * 260 * k; player.vy = -320 * Math.min(k, 1.3);
-  player.invuln = 1.3;
+  player.invuln = 1.3; player.cling = 0;
   if (player.hasShield && player.shieldCharge > 0){
     player.shieldCharge = 0;
     sfx('block');
@@ -704,7 +899,7 @@ function hurtPlayer(dmg, fromX, knock){
 
 function respawn(){
   player.x = world.checkpoint.x; player.y = world.checkpoint.y - 60;
-  player.vx = 0; player.vy = 0;
+  player.vx = 0; player.vy = 0; player.cling = 0;
   player.hearts = player.maxHearts;
   if (player.hasShield) player.shieldCharge = player.shieldMax;
   player.invuln = 2;
@@ -717,25 +912,67 @@ function updatePlayer(dt){
   p.attackT = Math.max(0, p.attackT - dt);
   p.coyote = Math.max(0, p.coyote - dt);
   p.jumpBuf = Math.max(0, p.jumpBuf - dt);
+  const car = p.form === 'car';
+  const walls = world.walls || [];
+  const wallAt = dir => {
+    const probe = { x: dir > 0 ? p.x + p.w : p.x - 3, y: p.y + 3, w: 3, h: p.h - 6 };
+    for (const wl of walls) if (overlap(probe, wl)) return wl;
+    return null;
+  };
 
-  // Laufen
   const wish = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
-  if (wish !== 0){ p.facing = wish; }
-  p.vx = lerp(p.vx, wish * MOVE, 1 - Math.pow(0.0005, dt));
+  const clingStart = p.cling !== 0;
 
-  // Springen (mit Coyote-Zeit + Puffer, kindgerecht großzügig)
-  if (inp.jumpP) p.jumpBuf = 0.15;
-  if (p.jumpBuf > 0 && (p.onGround || p.coyote > 0)){
-    p.vy = JUMPV; p.onGround = false; p.coyote = 0; p.jumpBuf = 0;
-    p.airJumped = false;
-    sfx('jump');
-  } else if (inp.jumpP && !p.onGround && p.coyote <= 0 && p.hasWings && !p.airJumped){
-    // Doppelsprung
-    p.airJumped = true; p.vy = JUMPV * 0.92; p.jumpBuf = 0;
-    burst(p.x + p.w / 2, p.y + p.h, '#bfefff', 10, 150);
-    sfx('djump');
+  // Wand-Klettern (nur der Wand-Hochkletterer in Welt 5)
+  if (p.cling){
+    const wl = wallAt(p.cling);
+    if (!wl){ p.cling = 0; }
+    else {
+      p.facing = p.cling;
+      p.vx = 0;
+      const climb = (inp.up ? -1 : 0) + (inp.down ? 1 : 0);
+      p.vy = climb * CLIMB;
+      p.climbT += Math.abs(climb) * dt;
+      p.onGround = false;
+      if (climb < 0 && p.y + p.h <= wl.y + 10){
+        // oben angekommen: auf die Wand hochziehen
+        p.x = p.cling > 0 ? wl.x + 2 : wl.x + wl.w - p.w - 2;
+        p.y = wl.y - p.h; p.vy = 0; p.cling = 0; p.onGround = true; p.airJumped = false;
+        burst(p.x + p.w / 2, p.y + p.h, '#9fe8ff', 8, 140);
+        sfx('grab');
+      } else if (inp.jumpBtnP){
+        // von der Wand abspringen
+        p.vx = -p.cling * 330; p.vy = JUMPV * 0.95; p.cling = 0; p.airJumped = false; p.jumpBuf = 0;
+        burst(p.x + p.w / 2, p.y + p.h / 2, '#9fe8ff', 8, 160);
+        sfx('jump');
+      } else if (wish === -p.cling){
+        // von der Wand weg drücken = loslassen
+        p.cling = 0; p.vx = wish * MOVE * 0.5;
+      }
+    }
   }
-  if (!inp.jump && p.vy < -200) p.vy = -200; // variable Sprunghöhe
+
+  if (!p.cling){
+    // Laufen
+    if (wish !== 0){ p.facing = wish; }
+    p.vx = lerp(p.vx, wish * MOVE, 1 - Math.pow(0.0005, dt));
+
+    // Springen (mit Coyote-Zeit + Puffer, kindgerecht großzügig)
+    if (!clingStart){
+      if (inp.jumpP) p.jumpBuf = 0.15;
+      if (p.jumpBuf > 0 && (p.onGround || p.coyote > 0)){
+        p.vy = JUMPV; p.onGround = false; p.coyote = 0; p.jumpBuf = 0;
+        p.airJumped = false;
+        sfx('jump');
+      } else if (inp.jumpP && !p.onGround && p.coyote <= 0 && p.hasWings && !p.airJumped){
+        // Doppelsprung
+        p.airJumped = true; p.vy = JUMPV * 0.92; p.jumpBuf = 0;
+        burst(p.x + p.w / 2, p.y + p.h, '#bfefff', 10, 150);
+        sfx('djump');
+      }
+    }
+    if (!inp.jump && p.vy < -200) p.vy = -200; // variable Sprunghöhe
+  }
 
   // Schlagen
   if (inp.atkP && p.attackT <= 0){
@@ -758,12 +995,23 @@ function updatePlayer(dt){
   }
 
   // Physik
-  p.vy += GRAV * dt;
-  p.vy = Math.min(p.vy, 900);
+  if (!p.cling){
+    p.vy += GRAV * dt;
+    p.vy = Math.min(p.vy, 900);
+  }
+  const prevX = p.x;
   p.x += p.vx * dt;
   p.x = clamp(p.x, 0, world.w - p.w);
 
-  const prevBottom = p.y + p.h;
+  // seitlich gegen Wände
+  let hitWall = 0;
+  for (const wl of walls){
+    if (!overlap(p, wl)) continue;
+    if (prevX + p.w <= wl.x + 0.5){ p.x = wl.x - p.w; hitWall = 1; }
+    else if (prevX >= wl.x + wl.w - 0.5){ p.x = wl.x + wl.w; hitWall = -1; }
+  }
+
+  const prevBottom = p.y + p.h, prevTop = p.y;
   p.y += p.vy * dt;
 
   const wasGround = p.onGround;
@@ -776,8 +1024,32 @@ function updatePlayer(dt){
         break;
       }
     }
+    // Oberseiten der Wände sind begehbar
+    if (!p.onGround) for (const wl of walls){
+      if (p.x + p.w > wl.x + 4 && p.x < wl.x + wl.w - 4 &&
+          prevBottom <= wl.y + 8 && p.y + p.h >= wl.y && p.y + p.h <= wl.y + wl.h + 18){
+        p.y = wl.y - p.h; p.vy = 0; p.onGround = true; p.airJumped = false;
+        break;
+      }
+    }
+  } else {
+    // Kopf gegen die Unterseite einer Wand
+    for (const wl of walls){
+      if (p.x + p.w > wl.x + 2 && p.x < wl.x + wl.w - 2 && prevTop >= wl.y + wl.h - 2 && p.y < wl.y + wl.h){
+        p.y = wl.y + wl.h; p.vy = 0;
+      }
+    }
   }
   if (wasGround && !p.onGround) p.coyote = 0.12;
+  if (p.onGround) p.cling = 0;
+
+  // An der Wand festhalten: in der Luft automatisch, am Boden nur beim Hoch-Drücken
+  if (car && hitWall && !p.cling && (!p.onGround || inp.up)){
+    p.cling = hitWall; p.vx = 0; p.vy = 0; p.onGround = false;
+    p.facing = hitWall; p.airJumped = false; p.climbT = 0;
+    burst(hitWall > 0 ? p.x + p.w : p.x, p.y + p.h / 2, '#9fe8ff', 6, 120);
+    sfx('grab');
+  }
 
   // Runterfallen
   if (p.y > world.killY){
@@ -791,7 +1063,29 @@ function updatePlayer(dt){
 function swordHitbox(){
   const p = player;
   if (p.attackT < 0.08 || p.attackT > 0.22) return null;
+  if (p.form === 'car'){
+    // Kopfschwert: schlägt über dem Auto und nach vorne
+    return { x: p.facing > 0 ? p.x + 8 : p.x + p.w - 8 - 160, y: p.y - 125, w: 160, h: p.h + 125 };
+  }
   return { x: p.facing > 0 ? p.x + p.w - 4 : p.x - 42, y: p.y - 4, w: 46, h: p.h + 8 };
+}
+
+// ---------- Laserschranken ----------
+function laserOn(l){ return ((gameT + l.offset) % l.period) < l.period * 0.5; }
+function laserBox(l){
+  return l.x1 === l.x2 ? { x: l.x1 - 5, y: l.y1, w: 10, h: l.y2 - l.y1 }
+                       : { x: l.x1, y: l.y1 - 5, w: l.x2 - l.x1, h: 10 };
+}
+function updateLasers(){
+  for (const l of (world.lasers || [])){
+    if (!laserOn(l)) continue;
+    if (player.invuln <= 0 && overlap(laserBox(l), player)){
+      sfx('laser');
+      // waagerechter Laser: Stoß weg von der Wand, an der er hängt (man fällt ein Stück)
+      const fromX = l.x1 === l.x2 ? l.x1 : (l.mount === 'left' ? l.x1 - 40 : l.x2 + 40);
+      hurtPlayer(l.dmg || 1, fromX, 1.1);
+    }
+  }
 }
 
 // ---------- Gegner ----------
@@ -872,6 +1166,10 @@ function bossDrop(b){
     world.pickups.push({ type: 'key', x: cx0 - 18, y: b.groundY - 56, w: 36, h: 32, t: 999 });
     showBanner('🎉 ' + b.name + ' besiegt!', 'Er hat den Kristall-Schlüssel fallen gelassen!', 4);
     speak('Jaaa! Der ' + b.name + ' ist besiegt! Schnapp dir den Kristallschlüssel und öffne den Ausgang!');
+  } else if (b.drop === 'chip'){
+    world.pickups.push({ type: 'chip', x: cx0 - 18, y: b.groundY - 56, w: 36, h: 32, t: 999 });
+    showBanner('🎉 ' + b.name + ' besiegt!', 'Er hat den Geheim-Chip fallen gelassen!', 4);
+    speak('Jaaa! Der ' + b.name + ' ist besiegt! Schnapp dir den Geheimchip und öffne die Geheimtür!');
   }
 }
 
@@ -911,8 +1209,8 @@ function updateBosses(dt){
       if (!b.onGround){
         burst(b.x + b.w / 2, b.groundY, '#dfe9f5', 12, 180); sfx('stomp');
         if (b.shock){
-          world.shocks.push({ x: b.x + b.w / 2, y: b.groundY, vx: 320, t: 2.5, minX: b.minX - 60, maxX: b.maxX + 200 });
-          world.shocks.push({ x: b.x + b.w / 2, y: b.groundY, vx: -320, t: 2.5, minX: b.minX - 60, maxX: b.maxX + 200 });
+          world.shocks.push({ x: b.x + b.w / 2, y: b.groundY, vx: 320, t: 2.5, minX: b.minX - 60, maxX: b.maxX + 200, dmg: b.dmg });
+          world.shocks.push({ x: b.x + b.w / 2, y: b.groundY, vx: -320, t: 2.5, minX: b.minX - 60, maxX: b.maxX + 200, dmg: b.dmg });
         }
       }
       b.y = b.groundY - b.h; b.vy = 0; b.onGround = true;
@@ -942,7 +1240,7 @@ function updateShocks(dt){
   for (const s of world.shocks){
     s.t -= dt; s.x += s.vx * dt;
     if (s.x < s.minX || s.x > s.maxX) s.t = 0;
-    if (s.t > 0 && overlap({ x: s.x - 14, y: s.y - 20, w: 28, h: 20 }, player)) hurtPlayer(1, s.x, 1.2);
+    if (s.t > 0 && overlap({ x: s.x - 14, y: s.y - 20, w: 28, h: 20 }, player)) hurtPlayer(s.dmg || 1, s.x, 1.2);
   }
   world.shocks = world.shocks.filter(s => s.t > 0);
 }
@@ -1005,7 +1303,7 @@ function updateCoins(dt){
     c.t -= dt;
     if (!c.grounded){
       c.vy += GRAV * dt; c.x += c.vx * dt; c.y += c.vy * dt;
-      for (const pl of world.platforms){
+      for (const pl of world.platforms.concat(world.walls || [])){
         if (c.vy > 0 && c.x > pl.x && c.x < pl.x + pl.w && c.y > pl.y - 6 && c.y < pl.y + 20){
           c.y = pl.y - 6; c.grounded = true;
         }
@@ -1077,6 +1375,12 @@ function updateCoins(dt){
       sfx('fanfare');
       speak('Der Kristallschlüssel! Jetzt kannst du das Tor zum Ausgang öffnen!');
       showBanner('🗝️ Kristall-Schlüssel!', 'Auf zum Ausgang!', 3.5);
+    } else if (pu.type === 'chip'){
+      pu.t = 0;
+      player.hasChip = true;
+      sfx('fanfare');
+      speak('Der Geheimchip! Mission fast geschafft! Klettere über die Mauer zur Geheimtür!');
+      showBanner('💾 Geheim-Chip!', 'Auf zur Geheimtür!', 3.5);
     }
   }
   world.pickups = world.pickups.filter(p => p.t > 0);
@@ -1085,7 +1389,7 @@ function updateCoins(dt){
 // ---------- Checkpoints, Truhen, Tür ----------
 function updateWorldObjects(dt){
   for (const f of world.flags){
-    if (!f.active && Math.abs(player.x - f.x) < 40 && Math.abs(player.y + player.h - f.y) < 60){
+    if (!f.active && Math.abs(player.x + player.w / 2 - f.x) < 50 && Math.abs(player.y + player.h - f.y) < 60){
       f.active = true;
       world.checkpoint = { x: f.x, y: f.y };
       if (player.hasShield && player.shieldCharge < player.shieldMax){
@@ -1107,11 +1411,18 @@ function updateWorldObjects(dt){
   if (world.door){
     world.door.hintCd = Math.max(0, (world.door.hintCd || 0) - dt);
     if (overlap(world.door, player)){
-      if (world.door.needsKey && !player.hasKey){
+      const lockKey = world.door.needsKey && !player.hasKey;
+      const lockChip = world.door.needsChip && !player.hasChip;
+      if (lockKey || lockChip){
         if (world.door.hintCd <= 0){
           world.door.hintCd = 3;
-          addFloater(world.door.x + 10, world.door.y - 30, '🗝️ Du brauchst den Schlüssel!', '#ffd24a');
-          speak('Das Tor ist verschlossen! Du brauchst den Kristallschlüssel vom Höhlenkönig!');
+          if (lockKey){
+            addFloater(world.door.x + 10, world.door.y - 30, '🗝️ Du brauchst den Schlüssel!', '#ffd24a');
+            speak('Das Tor ist verschlossen! Du brauchst den Kristallschlüssel vom Höhlenkönig!');
+          } else {
+            addFloater(world.door.x + 10, world.door.y - 30, '💾 Du brauchst den Geheim-Chip!', '#7fffd0');
+            speak('Die Geheimtür ist verschlossen! Du brauchst den Geheimchip vom Chef-Roboter!');
+          }
         }
       } else if (world.door.to){
         sfx('fanfare');
@@ -1119,7 +1430,7 @@ function updateWorldObjects(dt){
       } else {
         state = 'win'; stateT = 0; banner = null;
         sfx('fanfare');
-        speak('Fantastisch! Du hast alle vier Welten geschafft! Du bist ein echter Held!');
+        speak('Fantastisch! Du hast alle fünf Welten geschafft! Du bist ein echter Held!');
       }
     }
   }
@@ -1159,7 +1470,7 @@ function updateGlide(dt){
     if (next === 'win'){
       state = 'win'; stateT = 0; banner = null;
       sfx('fanfare');
-      speak('Fantastisch! Du hast alle drei Welten geschafft! Du bist ein echter Held!');
+      speak('Fantastisch! Du hast alle fünf Welten geschafft! Du bist ein echter Held!');
     } else {
       loadWorld(next);
       state = 'play';
@@ -1225,6 +1536,8 @@ function drawBackground(){
     g.addColorStop(0, '#8ea8ff'); g.addColorStop(0.6, '#cdd6ff'); g.addColorStop(1, '#ffe9c4');
   } else if (world.theme === 'cave'){
     g.addColorStop(0, '#181230'); g.addColorStop(0.5, '#2c2350'); g.addColorStop(1, '#241d3d');
+  } else if (world.theme === 'city'){
+    g.addColorStop(0, '#0b1030'); g.addColorStop(0.6, '#262b63'); g.addColorStop(1, '#4a3d7d');
   } else {
     const climb = clamp((300 - player.y) / 700, 0, 1); // höher = heller
     g.addColorStop(0, lerpColor('#7fc4e8', '#ffd9a0', climb));
@@ -1233,8 +1546,14 @@ function drawBackground(){
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
 
-  // Sonne (nicht in der Höhle)
-  if (world.theme !== 'cave'){
+  // Mond in der Roboter-Stadt, sonst Sonne (nicht in der Höhle)
+  if (world.theme === 'city'){
+    const mx = 760 - camX * 0.05, my = 90 - camY * 0.05;
+    ctx.fillStyle = '#eef0ff';
+    ctx.beginPath(); ctx.arc(mx, my, 34, 0, 7); ctx.fill();
+    ctx.fillStyle = '#c9cdf0';
+    ctx.beginPath(); ctx.arc(mx - 12, my - 8, 8, 0, 7); ctx.arc(mx + 12, my + 10, 5, 0, 7); ctx.fill();
+  } else if (world.theme !== 'cave'){
     ctx.fillStyle = 'rgba(255,235,130,.9)';
     ctx.beginPath(); ctx.arc(830 - camX * 0.05, 80 - camY * 0.05, 42, 0, 7); ctx.fill();
   }
@@ -1293,6 +1612,36 @@ function drawBackground(){
         ctx.lineTo(sx + 16 * d.s, -4);
         ctx.closePath(); ctx.fill();
       }
+    } else if (d.kind === 'star'){
+      const sx = d.x - camX * 0.1, sy = d.y - camY * 0.1;
+      if (sx > -5 && sx < W + 5 && sy > -5 && sy < H + 5){
+        ctx.fillStyle = 'rgba(255,255,255,' + (0.5 + Math.sin(gameT * 3 + d.x) * 0.4) + ')';
+        ctx.fillRect(sx, sy, d.s, d.s);
+      }
+    } else if (d.kind === 'building'){
+      const sx = d.x - camX * 0.35, base = 520 - camY * 0.35;
+      if (sx + d.w > -20 && sx < W + 20){
+        ctx.fillStyle = d.hue;
+        ctx.fillRect(sx, base - d.h, d.w, d.h + 300);
+        ctx.fillStyle = 'rgba(255,220,120,.5)';
+        let row = 0;
+        for (let wy = base - d.h + 14; wy < base - 10; wy += 24, row++){
+          let col = 0;
+          for (let wx = sx + 8; wx < sx + d.w - 10; wx += 20, col++){
+            if ((row * 7 + col * 13 + Math.floor(d.x)) % 5 !== 0) ctx.fillRect(wx, wy, 8, 10);
+          }
+        }
+      }
+    } else if (d.kind === 'spot'){
+      const sx = d.x - camX * 0.35, base = 520 - camY * 0.35;
+      if (sx > -500 && sx < W + 500){
+        const ang = -Math.PI / 2 + Math.sin(gameT * d.spd + d.phase) * 0.6;
+        ctx.fillStyle = 'rgba(255,255,200,.09)';
+        ctx.beginPath(); ctx.moveTo(sx, base);
+        ctx.lineTo(sx + Math.cos(ang - 0.12) * 900, base + Math.sin(ang - 0.12) * 900);
+        ctx.lineTo(sx + Math.cos(ang + 0.12) * 900, base + Math.sin(ang + 0.12) * 900);
+        ctx.closePath(); ctx.fill();
+      }
     }
   }
 }
@@ -1326,6 +1675,15 @@ function drawPlatform(pl){
     for (let zx = x + 6; zx < x + pl.w - 12; zx += 34) ctx.fillRect(zx, y - 8, 16, 10);
     ctx.fillStyle = '#ffd24a';
     ctx.fillRect(x, y + 12, pl.w, 3);
+  } else if (world.theme === 'city'){
+    ctx.fillStyle = '#4b5468';
+    rrect(x, y + 6, pl.w, pl.h + 14, 6); ctx.fill();
+    ctx.fillStyle = '#6a7489';
+    rrect(x - 3, y, pl.w + 6, 12, 4); ctx.fill();
+    ctx.fillStyle = '#39e0ff';
+    ctx.fillRect(x - 3, y + 10, pl.w + 6, 3);
+    ctx.fillStyle = 'rgba(255,255,255,.35)';
+    for (let rx = x + 10; rx < x + pl.w - 6; rx += 40){ ctx.beginPath(); ctx.arc(rx, y + 5, 2, 0, 7); ctx.fill(); }
   } else if (world.theme === 'cave'){
     ctx.fillStyle = '#4a3f66';
     rrect(x, y + 6, pl.w, pl.h + 16, 8); ctx.fill();
@@ -1342,6 +1700,76 @@ function drawPlatform(pl){
     rrect(x, y + 6, pl.w, pl.h + 14, 8); ctx.fill();
     ctx.fillStyle = '#57b04a';
     rrect(x - 3, y, pl.w + 6, 14, 7); ctx.fill();
+  }
+}
+
+function drawWall(wl){
+  const x = wl.x - camX, y = wl.y - camY;
+  if (x + wl.w < -20 || x > W + 20 || y > H + 20 || y + wl.h < -20) return;
+  ctx.fillStyle = '#5c6679';
+  rrect(x, y, wl.w, wl.h, 6); ctx.fill();
+  ctx.strokeStyle = '#2e3542'; ctx.lineWidth = 3;
+  rrect(x, y, wl.w, wl.h, 6); ctx.stroke();
+  // Plattenfugen
+  ctx.strokeStyle = 'rgba(0,0,0,.25)'; ctx.lineWidth = 2;
+  for (let yy = y + 40; yy < y + wl.h - 10; yy += 40){
+    ctx.beginPath(); ctx.moveTo(x + 4, yy); ctx.lineTo(x + wl.w - 4, yy); ctx.stroke();
+  }
+  // Griffleisten links & rechts: hier kann der Wand-Hochkletterer sich festhalten
+  ctx.fillStyle = '#ffd24a';
+  for (let yy = y + 20; yy < y + wl.h - 10; yy += 40){
+    ctx.fillRect(x + 3, yy, 10, 5); ctx.fillRect(x + wl.w - 13, yy, 10, 5);
+  }
+  ctx.fillStyle = '#39e0ff';
+  ctx.fillRect(x, y, wl.w, 5);
+}
+
+function drawLasers(){
+  for (const l of (world.lasers || [])){
+    const on = laserOn(l);
+    const phase = ((gameT + l.offset) % l.period) / l.period;   // < 0.5 = an
+    // Lämpchen: grün = sicher, orange blinkt = gleich an, rot = an
+    const lamp = on ? '#ff4a4a' : (phase > 0.85 ? (Math.floor(gameT * 10) % 2 ? '#ffb14a' : '#5a4a2a') : '#2ecc71');
+    const beam = (ax, ay, bx, by) => {
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
+      if (on){
+        ctx.strokeStyle = 'rgba(255,80,80,.35)'; ctx.lineWidth = 12; ctx.stroke();
+        ctx.strokeStyle = '#ff5c5c'; ctx.lineWidth = 4; ctx.stroke();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+      } else {
+        ctx.setLineDash([4, 10]);
+        ctx.strokeStyle = 'rgba(255,120,120,.25)'; ctx.lineWidth = 2; ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    };
+    if (l.x1 === l.x2){
+      // senkrechte Schranke: Mast mit Laserkanone oben und Empfänger unten
+      const x = l.x1 - camX, y1 = l.y1 - camY, y2 = l.y2 - camY;
+      if (x < -40 || x > W + 40) continue;
+      ctx.fillStyle = '#3a4152';
+      ctx.fillRect(x - 17, y1 - 26, 7, y2 - y1 + 26);
+      rrect(x - 14, y1 - 28, 28, 24, 5); ctx.fill();
+      rrect(x - 12, y2 - 8, 24, 10, 3); ctx.fill();
+      ctx.fillStyle = lamp;
+      ctx.beginPath(); ctx.arc(x, y1 - 16, 5, 0, 7); ctx.fill();
+      beam(x, y1 - 4, x, y2 - 8);
+    } else {
+      // waagerechter Laser: Kanone hängt an der Kletterwand und strahlt in die Luft
+      const xa = l.x1 - camX, xb = l.x2 - camX, y = l.y1 - camY;
+      if (xb < -40 || xa > W + 40 || y < -40 || y > H + 40) continue;
+      const mx = l.mount === 'left' ? xa : xb;      // Wandseite
+      const dir = l.mount === 'left' ? 1 : -1;      // Strahlrichtung
+      ctx.fillStyle = '#3a4152';
+      rrect(mx - (dir > 0 ? 6 : 26), y - 14, 32, 28, 5); ctx.fill();   // Kanone
+      ctx.fillStyle = '#ffd24a';
+      ctx.fillRect(mx - (dir > 0 ? 4 : 2), y - 20, 6, 4); ctx.fillRect(mx - (dir > 0 ? 4 : 2), y + 16, 6, 4);   // Halteschrauben
+      ctx.fillStyle = lamp;
+      ctx.beginPath(); ctx.arc(mx + dir * 14, y - 8, 4, 0, 7); ctx.fill();
+      beam(mx + dir * 20, y, dir > 0 ? xb : xa, y);
+      // Empfängerpunkt am freien Ende
+      ctx.fillStyle = on ? '#ff8a8a' : '#6a7489';
+      ctx.beginPath(); ctx.arc(dir > 0 ? xb : xa, y, 4, 0, 7); ctx.fill();
+    }
   }
 }
 
@@ -1388,6 +1816,8 @@ function drawDoor(){
   textOutline(d.label || 'Welt 3', x + d.w / 2, y - 34, 17, '#fff');
   if (d.needsKey && !player.hasKey)
     textOutline('🗝️', x + d.w / 2 + 30, y - 8 + Math.sin(gameT * 3) * 4, 20);
+  if (d.needsChip && !player.hasChip)
+    textOutline('💾', x + d.w / 2 + 30, y - 8 + Math.sin(gameT * 3) * 4, 20);
 }
 
 function drawSlime(e){
@@ -1433,12 +1863,65 @@ function drawFlyer(e){
   }
 }
 
+function drawBot(e){
+  const x = e.x - camX, y = e.y - camY, w = e.w, h = e.h;
+  // Kettenantrieb
+  ctx.fillStyle = '#2e3542';
+  rrect(x, y + h - 12, w, 12, 6); ctx.fill();
+  ctx.fillStyle = '#8892a8';
+  const span = w - 12;
+  for (let i = 0; i < 4; i++){
+    const rx = x + 6 + (((i * span / 4 + e.t * e.spd * e.dir) % span) + span) % span;
+    ctx.beginPath(); ctx.arc(rx, y + h - 6, 3, 0, 7); ctx.fill();
+  }
+  // Körper
+  ctx.fillStyle = e.flash > 0 ? '#fff' : '#7f8aa3';
+  rrect(x + 4, y + 4, w - 8, h - 14, 6); ctx.fill();
+  // Visier mit rotem Auge
+  ctx.fillStyle = '#1c2230';
+  rrect(x + 8, y + 9, w - 16, 10, 4); ctx.fill();
+  ctx.fillStyle = '#ff4a4a';
+  ctx.beginPath(); ctx.arc(x + w / 2 + e.dir * 8, y + 14, 3.5, 0, 7); ctx.fill();
+  // Antenne
+  ctx.strokeStyle = '#c3cce4'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x + w / 2, y + 4); ctx.lineTo(x + w / 2, y - 8); ctx.stroke();
+  ctx.fillStyle = Math.floor(gameT * 4) % 2 ? '#ff4a4a' : '#ffb14a';
+  ctx.beginPath(); ctx.arc(x + w / 2, y - 9, 3, 0, 7); ctx.fill();
+  if (e.maxHp > 1){
+    ctx.fillStyle = '#00000055'; ctx.fillRect(x, y - 18, w, 5);
+    ctx.fillStyle = '#ff6b6b'; ctx.fillRect(x, y - 18, w * e.hp / e.maxHp, 5);
+  }
+}
+
+function drawDrone(e){
+  const x = e.x - camX + e.w / 2, y = e.y - camY + e.h / 2;
+  // Rotoren
+  ctx.strokeStyle = '#3a4152'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(x - 18, y - 6); ctx.lineTo(x + 18, y - 6); ctx.stroke();
+  const spin = Math.abs(Math.sin(e.t * 30)) * 14 + 2;
+  ctx.fillStyle = 'rgba(200,220,255,.6)';
+  ctx.beginPath(); ctx.ellipse(x - 18, y - 8, spin, 3, 0, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x + 18, y - 8, spin, 3, 0, 0, 7); ctx.fill();
+  // Körper
+  ctx.fillStyle = e.flash > 0 ? '#fff' : '#6d7a93';
+  rrect(x - 14, y - 6, 28, 18, 7); ctx.fill();
+  // Kamera-Auge
+  ctx.fillStyle = '#1c2230'; ctx.beginPath(); ctx.arc(x, y + 3, 7, 0, 7); ctx.fill();
+  ctx.fillStyle = '#ff4a4a'; ctx.beginPath(); ctx.arc(x, y + 3, 3.5, 0, 7); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x - 1.5, y + 1.5, 1.2, 0, 7); ctx.fill();
+  if (e.maxHp > 1){
+    ctx.fillStyle = '#00000055'; ctx.fillRect(x - e.w / 2, y - 26, e.w, 5);
+    ctx.fillStyle = '#ff6b6b'; ctx.fillRect(x - e.w / 2, y - 26, e.w * e.hp / e.maxHp, 5);
+  }
+}
+
 const BOSS_STYLES = {
   cloud:  { body: '#e8eef7', puff: '#c8d4e8', face: '#33415c', crown: true },
   knight: { body: '#9aabce', puff: '#7e90b5', face: '#2d3a52', helmet: true },
   storm:  { body: '#5d6b80', puff: '#48566b', face: '#ffd24a', crown: true, bolt: true },
   crystal:{ body: '#b57ae0', puff: '#9055c8', face: '#2b1e42', shards: true },
   cavelord:{ body: '#544a72', puff: '#453c60', face: '#9fe8ff', crown: true, gem: true },
+  robot:  { body: '#8e97a8', puff: '#6a7386', face: '#ff4a4a', antenna: true, bolts: true, boxy: true },
 };
 
 function drawBossBody(b){
@@ -1447,15 +1930,31 @@ function drawBossBody(b){
   const squish = b.onGround ? 1 + Math.sin(b.t * 6) * 0.05 : 1.1;
   const topY = y + b.h - b.h * squish;
   ctx.fillStyle = b.flash > 0 ? '#fff' : s.body;
-  ctx.beginPath();
-  ctx.ellipse(x + b.w / 2, y + b.h - (b.h / 2) * squish, b.w / 2, (b.h / 2) * squish, 0, 0, 7);
-  ctx.fill();
-  // seitliche Wolken-/Schulterpolster
-  ctx.fillStyle = b.flash > 0 ? '#eee' : s.puff;
-  ctx.beginPath();
-  ctx.arc(x + b.w * 0.2, y + b.h - b.h * 0.62, b.w * 0.2, 0, 7);
-  ctx.arc(x + b.w * 0.8, y + b.h - b.h * 0.62, b.w * 0.2, 0, 7);
-  ctx.fill();
+  if (s.boxy){
+    // kastiger Roboter-Rumpf mit Kettenantrieb
+    rrect(x + b.w * 0.08, topY + b.h * 0.08, b.w * 0.84, b.h * 0.92, 14); ctx.fill();
+    ctx.fillStyle = b.flash > 0 ? '#eee' : '#2e3542';
+    rrect(x, y + b.h - 18, b.w, 18, 9); ctx.fill();
+    ctx.fillStyle = '#8892a8';
+    for (let i = 0; i < 6; i++){
+      const rx = x + 10 + (((i * (b.w - 20) / 6 + b.t * 90) % (b.w - 20)) + (b.w - 20)) % (b.w - 20);
+      ctx.beginPath(); ctx.arc(rx, y + b.h - 9, 4, 0, 7); ctx.fill();
+    }
+    // Schulterplatten
+    ctx.fillStyle = b.flash > 0 ? '#eee' : s.puff;
+    rrect(x - 6, topY + b.h * 0.2, b.w * 0.22, b.h * 0.3, 8); ctx.fill();
+    rrect(x + b.w * 0.84, topY + b.h * 0.2, b.w * 0.22, b.h * 0.3, 8); ctx.fill();
+  } else {
+    ctx.beginPath();
+    ctx.ellipse(x + b.w / 2, y + b.h - (b.h / 2) * squish, b.w / 2, (b.h / 2) * squish, 0, 0, 7);
+    ctx.fill();
+    // seitliche Wolken-/Schulterpolster
+    ctx.fillStyle = b.flash > 0 ? '#eee' : s.puff;
+    ctx.beginPath();
+    ctx.arc(x + b.w * 0.2, y + b.h - b.h * 0.62, b.w * 0.2, 0, 7);
+    ctx.arc(x + b.w * 0.8, y + b.h - b.h * 0.62, b.w * 0.2, 0, 7);
+    ctx.fill();
+  }
   if (s.crown){
     ctx.fillStyle = '#ffd24a';
     ctx.beginPath();
@@ -1476,6 +1975,19 @@ function drawBossBody(b){
     ctx.moveTo(x + b.w / 2 - 5, topY + b.h * 0.06);
     ctx.quadraticCurveTo(x + b.w / 2, topY - 18, x + b.w / 2 + 5, topY + b.h * 0.06);
     ctx.fill();
+  }
+  if (s.antenna){
+    ctx.strokeStyle = '#c3cce4'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(x + b.w / 2, topY + 6); ctx.lineTo(x + b.w / 2, topY - 26); ctx.stroke();
+    ctx.fillStyle = Math.floor(gameT * 5) % 2 ? '#ff4a4a' : '#ffb14a';
+    ctx.beginPath(); ctx.arc(x + b.w / 2, topY - 30, 7, 0, 7); ctx.fill();
+  }
+  if (s.bolts){
+    ctx.fillStyle = '#3a4152';
+    [[0.15, 0.75], [0.85, 0.75], [0.15, 0.3], [0.85, 0.3]].forEach(([fx, fy]) => {
+      ctx.beginPath(); ctx.arc(x + b.w * fx, y + b.h * fy, 4, 0, 7); ctx.fill();
+    });
+    textOutline('⚙️', x + b.w / 2, y + b.h - 24, 26);
   }
   if (s.bolt) textOutline('⚡', x + b.w / 2, y + b.h - 24, 26);
   if (s.gem) textOutline('💎', x + b.w / 2, y + b.h - 26, 26);
@@ -1533,7 +2045,127 @@ function drawSword(level, len){
   ctx.closePath(); ctx.fill();
 }
 
+function drawRoboCar(){
+  // Der Wand-Hochkletterer: rotes Roboter-Auto ohne Räder, mit Greifarmen, Gesicht und Schwert auf dem Kopf.
+  // Ursprung: Mitte der Unterkante der Hitbox (44 x 34). Blickrichtung wird gespiegelt.
+  const p = player;
+  const x = p.x - camX, y = p.y - camY;
+  ctx.save();
+  if (p.invuln > 0 && Math.floor(p.invuln * 14) % 2 === 0) ctx.globalAlpha = 0.35;
+  ctx.translate(x + p.w / 2, y + p.h);
+  const S = p.w / 44;                 // Zeichnung ist in 44er-Einheiten entworfen, Hitbox skaliert sie
+  ctx.scale(p.facing * S, S);
+  const cling = p.cling !== 0;
+  const moving = Math.abs(p.vx) > 20 && p.onGround;
+  const airborne = !p.onGround && !cling;
+  const step = moving ? Math.sin(p.animT * 14) : 0;
+  const reach = cling ? Math.sin(p.climbT * 9) : 0;
+
+  const limb = (x1, y1, x2, y2) => {
+    ctx.strokeStyle = '#2e3542'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  };
+  const hand = (hx, hy, dir) => {
+    // Greifhand: Kugel + zwei Krallen in Richtung dir (0 = hoch, 1 = zur Seite)
+    ctx.fillStyle = '#3a4152';
+    ctx.beginPath(); ctx.arc(hx, hy, 4.5, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#3a4152'; ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    if (dir === 1){ ctx.moveTo(hx + 3, hy - 4); ctx.lineTo(hx + 8, hy - 7); ctx.moveTo(hx + 3, hy + 4); ctx.lineTo(hx + 8, hy + 7); }
+    else          { ctx.moveTo(hx - 4, hy - 3); ctx.lineTo(hx - 7, hy - 8); ctx.moveTo(hx + 4, hy - 3); ctx.lineTo(hx + 7, hy - 8); }
+    ctx.stroke();
+  };
+  const foot = (fx, fy) => { ctx.fillStyle = '#3a4152'; ctx.beginPath(); ctx.arc(fx, fy, 4, 0, 7); ctx.fill(); };
+
+  // Hintere Arme (vom Betrachter weg) zuerst
+  if (cling){
+    limb(-18, -20, -30, -8);  hand(-30, -8, 0);
+    limb(-18, -14, -26, -2);  hand(-26, -2, 0);
+  } else {
+    const swing = moving ? step * 5 : (airborne ? -8 : 0);
+    limb(-20, -22, -34, -26 - swing); hand(-34, -26 - swing, 0);
+    limb(-20, -15, -36, -12 + swing); hand(-36, -12 + swing, 0);
+  }
+
+  // Beine / Greifer unten
+  if (cling){
+    limb(8, -6, 24, 2);  hand(24, 2, 1);
+    limb(-6, -6, 14, 6); hand(14, 6, 1);
+  } else {
+    const dangle = airborne ? 3 : 0;
+    const l1 = step * 6, l2 = -step * 6;
+    limb(-12, -8, -14 + l1, dangle); foot(-14 + l1, dangle);
+    limb(-3, -8, -4 + l2, dangle);   foot(-4 + l2, dangle);
+    limb(5, -8, 4 + l1, dangle);     foot(4 + l1, dangle);
+    limb(13, -8, 14 + l2, dangle);   foot(14 + l2, dangle);
+  }
+
+  // Karosserie (Auto-Form): Schürze, Körper, Kabine mit schräger Windschutzscheibe vorne
+  ctx.fillStyle = '#a83027';
+  rrect(-21, -9, 43, 7, 3); ctx.fill();
+  ctx.fillStyle = '#e0463a';
+  rrect(-23, -31, 47, 26, 9); ctx.fill();
+  ctx.fillStyle = '#f26b5c';
+  ctx.beginPath(); ctx.moveTo(-14, -30); ctx.lineTo(-10, -46); ctx.lineTo(6, -46); ctx.lineTo(15, -30); ctx.closePath(); ctx.fill();
+  // Scheiben
+  ctx.fillStyle = '#bfe8ff';
+  ctx.beginPath(); ctx.moveTo(-10, -32); ctx.lineTo(-7, -43); ctx.lineTo(-1, -43); ctx.lineTo(-1, -32); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(2, -32); ctx.lineTo(2, -43); ctx.lineTo(5, -43); ctx.lineTo(11, -32); ctx.closePath(); ctx.fill();
+  // Scheinwerfer vorne, Rücklicht hinten
+  ctx.fillStyle = '#fff3a0'; ctx.beginPath(); ctx.arc(21, -14, 3, 0, 7); ctx.fill();
+  ctx.fillStyle = '#ff9a9a'; ctx.fillRect(-23, -16, 3, 5);
+
+  // Gesicht vorne auf der Motorhaube
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(8, -21, 4.5, 0, 7); ctx.arc(17, -21, 4.5, 0, 7); ctx.fill();
+  ctx.fillStyle = '#222';
+  const look = cling ? -1.5 : 1.5;
+  ctx.beginPath(); ctx.arc(8 + look, -21 - (cling ? 1 : 0), 2.2, 0, 7); ctx.arc(17 + look, -21 - (cling ? 1 : 0), 2.2, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#222'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(12.5, -13.5, 4.5, 0.15, Math.PI - 0.15); ctx.stroke();
+
+  // Schild (aus Welt 1/3) als Emblem hinten
+  if (p.hasShield){
+    ctx.fillStyle = p.shieldCharge > 0 ? '#5fa8ff' : '#8899aa';
+    ctx.beginPath(); ctx.arc(-14, -20, 6, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#ffd24a'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(-14, -20, 6, 0, 7); ctx.stroke();
+  }
+  // Antenne mit Blinklicht am Heck
+  ctx.strokeStyle = '#3a4152'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(-18, -31); ctx.lineTo(-21, -42); ctx.stroke();
+  ctx.fillStyle = Math.floor(gameT * 4) % 2 ? '#ff4a4a' : '#ffb14a';
+  ctx.beginPath(); ctx.arc(-21, -44, 2.5, 0, 7); ctx.fill();
+
+  // Vordere Arme (zum Betrachter hin) – greifen an der Wand abwechselnd nach oben
+  if (cling){
+    limb(18, -22, 27, -40 + reach * 8); hand(27, -40 + reach * 8, 1);
+    limb(18, -14, 27, -18 - reach * 8); hand(27, -18 - reach * 8, 1);
+  } else {
+    const swing = moving ? step * 5 : (airborne ? -8 : 0);
+    limb(20, -22, 34, -26 + swing); hand(34, -26 + swing, 0);
+    limb(20, -15, 36, -12 - swing); hand(36, -12 - swing, 0);
+  }
+
+  // Schwert auf dem Kopf (Kabinendach): ruht senkrecht, schlägt nach vorne-unten
+  ctx.save();
+  ctx.translate(-2, -46);
+  let ang;
+  if (p.attackT > 0){
+    const k = 1 - p.attackT / 0.26;
+    ang = lerp(-0.5, 2.0, Math.min(1, k * 1.6));
+  } else {
+    ang = cling ? -0.25 : 0.12;
+  }
+  ctx.rotate(ang);
+  ctx.scale(1.2, 1.2);                                          // 20 % größer (Länge und Breite)
+  drawSword(p.sword, Math.round((24 + p.sword * 3) * 1.6));   // 60 % länger als das Heldenschwert
+  ctx.restore();
+  ctx.restore();
+}
+
 function drawPlayer(){
+  if (player.form === 'car'){ drawRoboCar(); return; }
   const p = player;
   const x = p.x - camX, y = p.y - camY;
   ctx.save();
@@ -1617,6 +2249,10 @@ function drawPickups(){
       ctx.fillStyle = 'rgba(255,220,120,' + (0.35 + Math.sin(gameT * 5) * 0.2) + ')';
       ctx.beginPath(); ctx.arc(x + 18, y + 16, 36, 0, 7); ctx.fill();
       textOutline('🗝️', x + 18, y + 16, 30);
+    } else if (pu.type === 'chip'){
+      ctx.fillStyle = 'rgba(120,255,200,' + (0.35 + Math.sin(gameT * 5) * 0.2) + ')';
+      ctx.beginPath(); ctx.arc(x + 18, y + 16, 36, 0, 7); ctx.fill();
+      textOutline('💾', x + 18, y + 16, 30);
     }
   }
   for (const c of world.coins){
@@ -1678,8 +2314,16 @@ function drawHUD(){
   }
   // Münzen
   textOutline('🪙 ' + stats.coins, W - 60, 28, 20);
-  // Weltname
-  text(world.name, W / 2, 16, 13, 'rgba(255,255,255,.9)');
+  // Weltname (rechts oben, damit viele Herzen Platz haben)
+  text(world.name, W - 14, 54, 13, 'rgba(255,255,255,.9)', 'right');
+  // Steuerhilfe für den Wand-Hochkletterer
+  if (player.form === 'car'){
+    ctx.fillStyle = 'rgba(0,0,0,.35)';
+    rrect(W / 2 - 270, H - 32, 540, 24, 10); ctx.fill();
+    text('🧗 An der Wand: ↑ ↓ klettern · Leertaste / A: abspringen · X: Kopfschwert', W / 2, H - 20, 13, '#fff');
+  }
+  // Test-Tasten
+  text('F5 ◀ Welt ▶ F6', W - 14, H - 12, 11, 'rgba(255,255,255,.45)', 'right');
 }
 
 function drawBanner(){
@@ -1747,6 +2391,19 @@ function drawQuiz(){
   } else if (q.kind === 'oddone'){
     for (let i = 0; i < q.options.length; i++)
       text(q.options[i], W / 2 - 195 + i * 130, cy + 155, 50);
+  } else if (q.kind === 'calc'){
+    ctx.fillStyle = '#e9eef7'; rrect(W / 2 - 200, cy + 112, 400, 88, 16); ctx.fill();
+    text(q.a + '  ' + q.sym + '  ' + q.b + '  =  ❓', W / 2, cy + 157, 46, '#33415c');
+  } else if (q.kind === 'numseq'){
+    for (let i = 0; i <= 4; i++){
+      const ix = W / 2 - 2 * 110 + i * 110;
+      ctx.fillStyle = i < 4 ? '#e9eef7' : '#fff1c9';
+      rrect(ix - 42, cy + 118, 84, 76, 14); ctx.fill();
+      text(i < 4 ? String(q.seq[i]) : '❓', ix, cy + 157, 40, '#33415c');
+    }
+  } else if (q.kind === 'firstletter'){
+    text(q.emo, W / 2 - 110, cy + 155, 66);
+    text('❓' + q.word.slice(1), W / 2 + 60, cy + 155, 46, '#5fa8ff');
   } else if (q.kind === 'memory'){
     const xs = [W / 2 - 180, W / 2, W / 2 + 180];
     for (let i = 0; i < 3; i++){
@@ -1912,11 +2569,13 @@ function drawTitle(){
   ctx.save();
   ctx.translate(480, 344);
   ctx.scale(1.3, 1.3);
+  const save = { x: player.x, y: player.y, cx: camX, cy: camY, form: player.form, w: player.w, h: player.h };
+  player.form = 'hero'; player.w = 32; player.h = 44;
   ctx.translate(-player.w / 2, -player.h);
-  const save = { x: player.x, y: player.y, cx: camX, cy: camY };
   player.x = 0; player.y = 0; camX = 0; camY = 0;
   drawPlayer();
   player.x = save.x; player.y = save.y; camX = save.cx; camY = save.cy;
+  player.form = save.form; player.w = save.w; player.h = save.h;
   ctx.restore();
 
   const bob = Math.sin(gameT * 2) * 8;
@@ -1945,11 +2604,11 @@ function drawWin(){
     text(['🎉','⭐','🎊','✨'][i % 4], fx, fy, 20 + i % 3 * 8);
   }
   textOutline('GESCHAFFT! 🏆', W / 2, 130, 64, '#ffd24a');
-  text('Du hast alle vier Welten gemeistert!', W / 2, 200, 26, '#fff');
+  text('Du hast alle fünf Welten gemeistert!', W / 2, 200, 26, '#fff');
   const s = SWORDS[player.sword];
   text('🪙 ' + stats.coins + ' Münzen      👾 ' + stats.kills + ' Monster besiegt', W / 2, 270, 24, '#fff');
   text('⚔️ ' + s.name + (player.hasBow ? '  ·  🏹 Bogen' : '') + '      ❤️ ' + player.maxHearts + ' Herzen', W / 2, 310, 24, '#fff');
-  text('Welt 5 kommt bald… 🌊', W / 2, 380, 22, '#7fd0ff');
+  text('Welt 6 kommt bald… 🌊', W / 2, 380, 22, '#7fd0ff');
   if (stateT > 1.5 && Math.floor(gameT * 1.4) % 2 === 0)
     textOutline('Knopf drücken für nochmal!', W / 2, 460, 24);
 }
@@ -1958,6 +2617,8 @@ function drawWin(){
 function drawWorld(){
   drawBackground();
   for (const pl of world.platforms) drawPlatform(pl);
+  for (const wl of (world.walls || [])) drawWall(wl);
+  if (world.lasers) drawLasers();
   if (world.theme === 'forest'){
     // Bohnenranke hinter dem Kletterturm
     ctx.strokeStyle = '#3f8f3a'; ctx.lineWidth = 14;
@@ -1972,7 +2633,8 @@ function drawWorld(){
   for (const c of world.chests) drawChest(c);
   if (world.door) drawDoor();
   for (const e of world.enemies){
-    if (e.type === 'slime') drawSlime(e); else drawFlyer(e);
+    if (world.theme === 'city'){ if (e.type === 'slime') drawBot(e); else drawDrone(e); }
+    else if (e.type === 'slime') drawSlime(e); else drawFlyer(e);
   }
   drawBosses();
   drawShocks();
@@ -2011,6 +2673,10 @@ function loop(now){
   stateT += dt;
   pollInput();
 
+  // Test: F5 = Welt zurück, F6 = Welt vor (Upgrades werden passend gesetzt)
+  if (pressedKeys['F5']) debugJumpWorld(-1);
+  else if (pressedKeys['F6']) debugJumpWorld(1);
+
   if (state === 'title'){
     if (inp.confirmP) startGame();
     drawTitle();
@@ -2022,6 +2688,7 @@ function loop(now){
       updateBosses(dt);
       updateArrows(dt);
       updateShocks(dt);
+      updateLasers();
       updateCoins(dt);
       updateWorldObjects(dt);
     }
