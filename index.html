@@ -19,6 +19,7 @@
 //  SPIELIWER — ein Spiel von Linus & Papa
 //  Welt 1: Himmelsinseln  ->  Paraglider  ->  Welt 2: Waldland
 //  Welt 3: Wolkenschloss  ->  Welt 4: Kristallhöhle  ->  Welt 5: Roboter-Stadt (Wand-Hochkletterer)
+//  Welt 6: Autobahn (Fahr-Modus: Spuren wechseln, Verkehr ausweichen, Ampel-Roboter)
 //  Test: F5 = eine Welt zurück, F6 = eine Welt vor (Upgrades werden passend gesetzt/entfernt)
 // ============================================================
 
@@ -80,6 +81,11 @@ function sfx(name){
     case 'grab':    tone(180, .08, 'square', .09, 0, 420); break;
     case 'laser':   tone(1100, .16, 'sawtooth', .1, 0, 300); break;
     case 'robo':    [300,450,600,900].forEach((f,i)=>tone(f,.12,'square',.1,i*.08)); break;
+    case 'crash':   tone(120, .35, 'sawtooth', .18, 0, 40); tone(400, .12, 'square', .1, 0, 100); break;
+    case 'zap':     tone(1500, .25, 'sawtooth', .12, 0, 200); tone(90, .3, 'square', .1, .05, 60); break;
+    case 'honk':    tone(330, .16, 'square', .08); tone(262, .16, 'square', .08, .18); break;
+    case 'green':   tone(660, .12, 'triangle', .12); tone(990, .2, 'triangle', .12, .12); break;
+    case 'red':     tone(440, .25, 'square', .12, 0, 220); break;
   }
 }
 function speak(text, onDone){
@@ -189,7 +195,11 @@ const SWORDS = [
 ];
 const BOW_DMG = 3;
 const CLIMB = 170;        // Klettertempo des Wand-Hochkletterers (px/s)
-const WORLD_COUNT = 5;
+const DRIVE_BASE = 570;   // Grundtempo des Autobahn-Autos (px/s), wird durch Turbo-Truhen erhöht
+const REST_Y = 320;       // einzige befahrbare Spur (Straßenmitte) an Raststätten
+const DRIVE_DMG = 8;      // Herzen pro Kollision / Ampel-Blitz in Welt 6
+const DRIVE_REV = 120;    // Rückwärts-Tempo des Autobahn-Autos (px/s)
+const WORLD_COUNT = 6;
 
 // ---------- Globale Zustände ----------
 let state = 'title', stateT = 0;
@@ -211,11 +221,14 @@ const player = {
   hasWings: false, airJumped: false, hasKey: false,
   // Welt 5: Der Held steuert den Wand-Hochkletterer (Roboter-Auto)
   form: 'hero', cling: 0, climbT: 0, hasChip: false,
+  // Welt 6: Autobahn-Auto
+  lane: 2, driveV: 0, dist: 0, seat: 1, speedMult: 1,
 };
 
 function setForm(f){
   player.form = f;
   if (f === 'car'){ player.w = 80; player.h = 60; }
+  else if (f === 'roadcar'){ player.w = 120; player.h = 52; }
   else            { player.w = 32; player.h = 44; }
   player.cling = 0; player.climbT = 0;
 }
@@ -227,6 +240,7 @@ function resetPlayerStats(){
   player.hasBow = false; player.arrows = 0; player.bowCd = 0;
   player.hasWings = false; player.airJumped = false; player.hasKey = false;
   player.hasChip = false; setForm('hero');
+  player.lane = 2; player.driveV = 0; player.dist = 0; player.seat = 1; player.speedMult = 1;
   player.invuln = 0; player.attackT = 0; player.vx = 0; player.vy = 0;
   stats = { coins: 0, kills: 0 };
 }
@@ -551,7 +565,50 @@ function buildWorld5(){
     platforms, walls, lasers, enemies, chests, flags, bosses, decor,
     pickups: [], coins: [], arrows: [], shocks: [],
     spawn: { x: 60, y: 400 }, checkpoint: { x: 60, y: 400 },
-    door: { x: 5720, y: 370, w: 70, h: 90, needsChip: true, label: 'Geheimtür', hintCd: 0 }, theme: 'city',
+    door: { x: 5650, y: 408, w: 120, h: 52, needsChip: true, kind: 'car', label: 'Neues Auto!', to: 6, hintCd: 0 }, theme: 'city',
+  };
+}
+
+function buildWorld6(){
+  // Autobahn: Fahr-Modus. Vier Spuren (oben zwei Gegenverkehr, unten zwei langsamer in Fahrtrichtung).
+  // Raststätten verengen die Straße auf eine Mittelspur, dort stehen Speicherpunkt und Truhe.
+  // Am Ende: lange Zielgerade zum Ampel-Roboter (Rotes Licht, grünes Licht).
+  const lanes = [230, 290, 350, 410];
+  const segments = [
+    { type: 'rest', x0: 0, x1: 700 },
+    { type: 'road', x0: 700, x1: 6700, gapMin: 1.3, gapMax: 2.1, vMin: 170, vMax: 250 },
+    { type: 'rest', x0: 6700, x1: 7400 },
+    { type: 'road', x0: 7400, x1: 14000, gapMin: 1.0, gapMax: 1.7, vMin: 210, vMax: 300 },
+    { type: 'rest', x0: 14000, x1: 14700 },
+    { type: 'road', x0: 14700, x1: 21900, gapMin: 0.8, gapMax: 1.4, vMin: 250, vMax: 350 },
+    { type: 'rest', x0: 21900, x1: 22600 },
+    { type: 'boss', x0: 22600, x1: 34800 },
+  ];
+  const restMid = s => (s.x0 + s.x1) / 2;
+  const rests = [segments[2], segments[4], segments[6]];
+  const tasks = ['add3', 'numseq', 'firstletter'];
+  const chests = rests.map((s, i) => ({ x: restMid(s) + 30, y: REST_Y - 17, w: 40, h: 34, task: tasks[i], reward: 'speed', double: true, open: false, cd: 0 }));
+  const flags = rests.map(s => ({ x: restMid(s) - 50, y: 196, active: false }));
+  const bosses = [ makeBoss({
+    name: 'Ampel-Roboter', icon: '🚦', style: 'light', drop: 'finish', dmg: DRIVE_DMG,
+    intro: 'Der Ampel-Roboter!', introSub: 'Rot: STOPP! · Grün: schnell fahren! · Erreiche die Ampel!',
+    introSay: 'Der Ampel-Roboter! Es ist Rot, also stehen bleiben! Bei Grün fährst du so schnell du kannst. Bei Rot musst du sofort anhalten, sonst kommt der Blitz! Wer die Ampel erreicht, hat gewonnen!',
+    x: 34400, y: 180, w: 120, h: 270, hp: 21, maxHp: 21, groundY: 450,
+    phase: 'red', phaseT: 3, arrowT: 3, startX: 22600,
+  }) ];
+  const decor = [];
+  for (let i = 0; i < 52; i++) decor.push({ kind: 'hill', x: rnd(-300, 35400), s: rnd(.7, 1.6), hue: pick(['#7fbf6a', '#6fae5c', '#8fcc78']) });
+  for (let i = 0; i < 200; i++) decor.push({ kind: 'tree6', x: rnd(0, 35000), s: rnd(.6, 1.2), top: Math.random() < 0.5 });
+  for (let i = 0; i < 26; i++) decor.push({ kind: 'cloud', x: rnd(0, 35000), y: rnd(20, 90), s: rnd(.6, 1.2), spd: rnd(6, 14) });
+  const signs = [[600, 'Autobahn →'], [6300, 'Raststätte 1'], [13600, 'Raststätte 2'], [21500, 'Raststätte 3'], [22550, '🚦 Ampel-Roboter']];
+  signs.forEach(([x, text]) => decor.push({ kind: 'sign', x, text }));
+  return {
+    num: 6, name: 'Welt 6 · Autobahn', mode: 'drive', w: 34800, top: 0, killY: 99999, form: 'roadcar',
+    lanes, segments, traffic: [], spawnT: 1.5, zapT: 0, winT: null,
+    platforms: [], walls: [], lasers: [], enemies: [], chests, flags, bosses, decor,
+    pickups: [], coins: [], arrows: [], shocks: [],
+    spawn: { x: 100, y: REST_Y - 26, lane: 2 }, checkpoint: { x: 100, y: REST_Y - 26, lane: 2 },
+    door: null, theme: 'highway',
   };
 }
 
@@ -564,6 +621,7 @@ const WORLD_LOOT = {
   3(){ player.hasBow = true; player.arrows = 10; player.hasShield = true; player.shieldMax = 2; player.shieldCharge = 2;
        player.maxHearts += 3; },
   4(){ player.hasWings = true; player.hasKey = true; player.maxHearts += 3; },
+  5(){ player.hasChip = true; player.maxHearts += 2; },
 };
 function applyLootUpTo(n){
   for (let k = 1; k < n; k++) if (WORLD_LOOT[k]) WORLD_LOOT[k]();
@@ -584,10 +642,16 @@ function debugJumpWorld(delta){
 
 function loadWorld(n){
   worldNum = n;
-  world = n === 1 ? buildWorld1() : n === 2 ? buildWorld2() : n === 3 ? buildWorld3() : n === 4 ? buildWorld4() : buildWorld5();
+  world = n === 1 ? buildWorld1() : n === 2 ? buildWorld2() : n === 3 ? buildWorld3() : n === 4 ? buildWorld4() : n === 5 ? buildWorld5() : buildWorld6();
   setForm(world.form || 'hero');
   player.x = world.spawn.x; player.y = world.spawn.y;
   player.vx = 0; player.vy = 0; player.invuln = 1;
+  if (world.mode === 'drive'){
+    // Das Autobahn-Auto hat einen eingebauten Pfeilwerfer
+    player.lane = world.spawn.lane; player.driveV = 0; player.dist = 0; player.seat = 1;
+    player.hasBow = true; player.arrows = Math.max(player.arrows, 10); player.bowCd = 0;
+    sfx('honk');
+  }
   if (world.form === 'car'){
     sfx('robo');
     burst(player.x + player.w / 2, player.y + player.h / 2, '#9fe8ff', 30, 300);
@@ -600,6 +664,7 @@ function loadWorld(n){
     3: ['Besiege die drei Wächter!', 'Welt drei: Das Wolkenschloss! Besiege die drei Wächter des Schlosses!'],
     4: ['Schnapp dir die Sprungflügel!', 'Welt vier: Die Kristallhöhle! Schnapp dir die Sprungflügel und lerne den Doppelsprung!'],
     5: ['Du bist jetzt der Wand-Hochkletterer!', 'Welt fünf: Die Roboterstadt! Du bist jetzt der Wandhochkletterer, ein geheimer Spion! Halte dich an Wänden fest und klettere mit Hoch und Runter! Mit der Leertaste springst du von der Wand ab!'],
+    6: ['Weiche den anderen Autos aus!', 'Welt sechs: Die Autobahn! Du sitzt jetzt in deinem neuen Auto! Gib mit der rechten Pfeiltaste Gas, wechsle mit Hoch und Runter die Spur und weiche den anderen Autos aus! Mit C oder der Leertaste schießt du Pfeile. Vorsicht: Ein Zusammenstoß kostet acht Herzen!'],
   };
   showBanner(world.name, subs[n][0], 3.5);
   speak(subs[n][1]);
@@ -618,8 +683,8 @@ const WORDS = [
 
 // Antwortzahlen rund um die richtige Lösung (schwerer als zufällige Zahlen)
 function nearOptions(correct, count, min, max){
-  const pool = [];
-  for (let v = Math.max(min, correct - 5); v <= Math.min(max, correct + 5); v++) if (v !== correct) pool.push(v);
+  const pool = [], span = Math.max(5, count);
+  for (let v = Math.max(min, correct - span); v <= Math.min(max, correct + span); v++) if (v !== correct) pool.push(v);
   pool.sort(() => Math.random() - .5);
   const arr = [correct, ...pool.slice(0, count - 1)].sort((a, b) => a - b);
   return { options: arr.map(String), correct: arr.indexOf(correct) };
@@ -633,12 +698,13 @@ function numOptions(correct, max, count){
   return { options: arr.map(String), correct: arr.indexOf(correct) };
 }
 
-function makeTask(type){
+function makeTask(type, mult){
+  const M = mult || 1;   // 2 = doppelt so viele Antwortmöglichkeiten (Welt 6)
   if (type === 'count' || type === 'count2'){
     const hard = type === 'count2';
     const n = Math.floor(rnd(hard ? 5 : 3, hard ? 10 : 7));
     const [emo, name] = pick(COUNT_ITEMS);
-    const o = numOptions(n, hard ? 10 : 8, 6);
+    const o = numOptions(n, hard ? 10 : 8, 6 * M);
     return { kind: 'count', emo, n,
       question: 'Wie viele ' + name + '?',
       spoken: 'Wie viele ' + name + ' siehst du? Wähle die richtige Zahl!',
@@ -648,7 +714,7 @@ function makeTask(type){
     const hard = type === 'add2';
     const a = Math.floor(rnd(1, hard ? 6 : 4)), b = Math.floor(rnd(1, hard ? 6 : 4));
     const [emo] = pick(COUNT_ITEMS);
-    const o = numOptions(a + b, hard ? 11 : 8, 6);
+    const o = numOptions(a + b, hard ? 11 : 8, 6 * M);
     return { kind: 'add', emo, a, b,
       question: a + ' + ' + b + ' = ?',
       spoken: 'Wie viel ist ' + a + ' plus ' + b + '?',
@@ -699,7 +765,7 @@ function makeTask(type){
     let a, b, res, sym;
     if (type === 'add3'){ a = Math.floor(rnd(5, 13)); b = Math.floor(rnd(3, 10)); res = a + b; sym = '+'; }
     else { a = Math.floor(rnd(11, 21)); b = Math.floor(rnd(2, 10)); res = a - b; sym = '−'; }
-    const o = nearOptions(res, 6, 1, 20);
+    const o = nearOptions(res, 6 * M, 1, 20);
     return { kind: 'calc', a, b, sym,
       question: 'Kopfrechnen! Wie viel ist das?',
       spoken: 'Kopfrechnen! Wie viel ist ' + a + (sym === '+' ? ' plus ' : ' minus ') + b + '?',
@@ -716,17 +782,18 @@ function makeTask(type){
     else { start = Math.floor(rnd(7, 13)); step = -1; }
     const seq = [0, 1, 2, 3].map(i => start + i * step);
     const answer = start + 4 * step;
-    const o = nearOptions(answer, 6, 1, 99);
+    const o = nearOptions(answer, 6 * M, 1, 99);
     return { kind: 'numseq', seq,
       question: 'Wie geht es weiter?',
-      spoken: 'Schau dir die Zahlenreihe an: ' + seq.join(', ') + '. Welche Zahl kommt als Nächstes?',
+      // kein Punkt direkt nach einer Zahl, sonst liest die Sprachausgabe „vierzigste“
+      spoken: 'Schau dir die Zahlenreihe an: ' + seq.join(', ') + ', und dann? Welche Zahl kommt als Nächstes?',
       options: o.options, correct: o.correct };
   }
   if (type === 'firstletter'){
     const [emo, word] = pick(WORDS);
     const target = word[0];
     const set = new Set([target]);
-    while (set.size < 4) set.add(pick(LETTERS));
+    while (set.size < 4 * M) set.add(pick(LETTERS));
     const arr = [...set].sort(() => Math.random() - .5);
     return { kind: 'firstletter', emo, word, target,
       question: 'Mit welchem Buchstaben beginnt „' + word + '“?',
@@ -737,7 +804,7 @@ function makeTask(type){
     const a = Math.floor(rnd(4, 10));
     const b = Math.floor(rnd(1, a - 1));
     const [emo] = pick(COUNT_ITEMS);
-    const o = numOptions(a - b, 9, 6);
+    const o = numOptions(a - b, 9, 6 * M);
     return { kind: 'sub', emo, a, b,
       question: a + ' − ' + b + ' = ?',
       spoken: 'Wie viel ist ' + a + ' minus ' + b + '?',
@@ -746,7 +813,7 @@ function makeTask(type){
   // letter
   const target = pick(LETTERS);
   const set = new Set([target]);
-  while (set.size < 4) set.add(pick(LETTERS));
+  while (set.size < 4 * M) set.add(pick(LETTERS));
   const arr = [...set].sort(() => Math.random() - .5);
   return { kind: 'letter', target,
     question: 'Finde das ' + target + '!',
@@ -764,8 +831,10 @@ function startQuestionLock(text, prefix){
   speak((prefix || '') + text, () => { if (quiz === q) quiz.awaitSpeech = false; });
 }
 
+function quizCols(n){ return n >= 8 ? 4 : n === 6 ? 3 : 2; }
+
 function openChest(chest){
-  const task = makeTask(chest.task);
+  const task = makeTask(chest.task, chest.double ? 2 : 1);
   quiz = { chest, task, sel: -1, fails: 0, penaltyT: 0,
            penaltySpeech: false, penaltyFailsafeT: 0,
            awaitSpeech: false, minT: 0, failsafeT: 0,
@@ -784,6 +853,7 @@ const REWARDS = {
   shield:  { icon: '🛡️', apply(){ player.hasShield = true; player.shieldCharge = player.shieldMax; }, text: 'Schild!', spoken: 'Toll! Ein Schild! Er blockt einen Treffer!' },
   heartup: { icon: '❤️', apply(){ player.maxHearts++; player.hearts = player.maxHearts; }, text: 'Extra-Herz!', spoken: 'Klasse! Ein Extraherz für dich!' },
   arrows10:{ icon: '🏹', apply(){ player.arrows = 10; }, text: 'Köcher aufgefüllt!', spoken: 'Toll! Dein Köcher ist wieder voll mit Pfeilen!' },
+  speed:   { icon: '⚡', apply(){ player.speedMult += 0.15; }, text: 'Turbo! +15 % Tempo', spoken: 'Turbo! Dein Auto fährt jetzt 15 Prozent schneller!' },
 };
 
 function updateQuiz(dt){
@@ -822,7 +892,7 @@ function updateQuiz(dt){
   }
   if (quiz.fails >= 2){
     // nach 2 Fehlern: neue Frage gleichen Typs
-    quiz.task = makeTask(quiz.chest.task);
+    quiz.task = makeTask(quiz.chest.task, quiz.chest.double ? 2 : 1);
     quiz.fails = 0;
     if (quiz.task.kind === 'memory'){
       quiz.phase = 'memorize'; quiz.memT = 3.5; quiz.sel = -1;
@@ -839,7 +909,7 @@ function updateQuiz(dt){
   if (quiz.failsafeT <= 0) quiz.awaitSpeech = false;
   if (quiz.awaitSpeech || quiz.minT > 0) return;
 
-  const n = quiz.task.options.length, cols = n === 6 ? 3 : 2;
+  const n = quiz.task.options.length, cols = quizCols(n);
   const rows = Math.ceil(n / cols);
   const selMove = (dx, dy) => {
     if (quiz.sel < 0){ quiz.sel = 0; sfx('swing'); return; }
@@ -899,6 +969,11 @@ function hurtPlayer(dmg, fromX, knock){
 
 function respawn(){
   player.x = world.checkpoint.x; player.y = world.checkpoint.y - 60;
+  if (world.mode === 'drive'){
+    player.lane = world.checkpoint.lane == null ? 2 : world.checkpoint.lane;
+    player.y = world.lanes[player.lane] - player.h / 2;
+    player.driveV = 0; world.traffic = []; world.zapT = 0;
+  }
   player.vx = 0; player.vy = 0; player.cling = 0;
   player.hearts = player.maxHearts;
   if (player.hasShield) player.shieldCharge = player.shieldMax;
@@ -1070,6 +1145,184 @@ function swordHitbox(){
   return { x: p.facing > 0 ? p.x + p.w - 4 : p.x - 42, y: p.y - 4, w: 46, h: p.h + 8 };
 }
 
+// ---------- Welt 6: Fahr-Modus ----------
+function driveHit(dmg, fromX){
+  if (player.invuln > 0) return false;
+  hurtPlayer(dmg, fromX, 0.2);
+  player.vx = 0; player.vy = 0; player.driveV = 0;
+  // Der Kopf der Spielfigur taucht in einem anderen Fenster auf
+  let s = player.seat;
+  while (s === player.seat) s = Math.floor(rnd(0, 3));
+  player.seat = s;
+  sfx('crash');
+  return true;
+}
+
+function spawnTrafficCar(seg){
+  const lane = Math.floor(rnd(0, 4));
+  const oncoming = lane < 2;
+  const type = Math.random() < 0.25 ? 'truck' : 'car';
+  const w = type === 'truck' ? 150 : 84, h = type === 'truck' ? 50 : 42;
+  const x = camX + W + 80 + rnd(0, 160);
+  if (x + w > seg.x1 - 40) return;                       // Verkehr bleibt auf seiner Strecke
+  for (const c of world.traffic) if (c.lane === lane && Math.abs(c.x - x) < 300) return;
+  const vx = oncoming ? -rnd(seg.vMin, seg.vMax) : rnd(90, 170);
+  world.traffic.push({ x, y: world.lanes[lane] - h + 6, w, h, vx, lane, type, seg,
+    color: pick(['#3d7be0', '#f2b134', '#5cb85c', '#9b59b6', '#ecf0f1', '#e67e22', '#1abc9c']) });
+}
+
+function updateTraffic(dt){
+  const p = player;
+  const seg = world.segments.find(s => p.x >= s.x0 && p.x < s.x1);
+  if (seg && seg.type === 'road'){
+    world.spawnT -= dt;
+    if (world.spawnT <= 0){ world.spawnT = rnd(seg.gapMin, seg.gapMax); spawnTrafficCar(seg); }
+  }
+  for (const c of world.traffic){
+    c.x += c.vx * dt;
+    if (c.x + c.w < c.seg.x0 || c.x > c.seg.x1 || c.x + c.w < camX - 300 || c.x > camX + W + 900) c.dead = true;
+    if (!c.dead && overlap(c, p) && p.invuln <= 0){
+      if (driveHit(DRIVE_DMG, c.x + c.w / 2)){
+        c.dead = true;
+        burst(c.x + c.w / 2, c.y + c.h / 2, c.color, 18, 260);
+      }
+    }
+  }
+  world.traffic = world.traffic.filter(c => !c.dead);
+}
+
+function destroyTrafficCar(c){
+  c.dead = true;
+  stats.kills++;
+  burst(c.x + c.w / 2, c.y + c.h / 2, c.color, 18, 260);
+  stats.coins++;
+  addFloater(c.x, c.y - 10, '+1 🪙', '#ffd24a');
+  if (Math.random() < 0.35)
+    world.pickups.push({ type: 'arrows', n: 3, x: c.x + c.w / 2 - 13, y: world.lanes[c.lane] - 11, w: 26, h: 22, t: 12 });
+  sfx('hit');
+}
+
+function updateDriveArrows(dt){
+  for (const a of world.arrows){
+    a.t -= dt;
+    a.x += a.vx * dt;
+    const hitbox = { x: a.x - 14, y: a.y - 3, w: 28, h: 6 };
+    for (const c of world.traffic){
+      if (!c.dead && overlap(hitbox, c)){ a.t = 0; destroyTrafficCar(c); break; }
+    }
+    if (a.t <= 0) continue;
+    for (const b of world.bosses){
+      if (!b.dead && b.active && overlap(hitbox, b)){ a.t = 0; hitBoss(b, BOW_DMG); break; }
+    }
+  }
+  world.arrows = world.arrows.filter(a => a.t > 0);
+  world.traffic = world.traffic.filter(c => !c.dead);
+}
+
+function updateTrafficBoss(b, dt){
+  const p = player;
+  if (b.dead) return;
+  if (!b.active){
+    if (p.x > b.startX){
+      b.active = true; b.phase = 'red'; b.phaseT = 3.5; b.t = 0;   // startet bei Rot (kurze Schonfrist zum Anhalten)
+      showBanner('⚠️ ' + b.intro, b.introSub, 4);
+      speak(b.introSay);
+      sfx('roar');
+    }
+    return;
+  }
+  b.t += dt;
+  b.phaseT -= dt;
+  if (b.phaseT <= 0){
+    if (b.phase === 'green'){ b.phase = 'yellow'; b.phaseT = 1.125; sfx('block'); }
+    else if (b.phase === 'yellow'){ b.phase = 'red'; b.phaseT = rnd(2.0, 4.0); sfx('red'); }
+    else { b.phase = 'green'; b.phaseT = rnd(1.25, 2.25); sfx('green'); }   // nur kurze Grünphasen
+  }
+  // Blitz nur, wenn bei Rot wirklich eine Fahrtaste gehalten wird (Ausrollen ist erlaubt) – bei Gelb bremsen!
+  const pressing = (inp.right || inp.left) && Math.abs(p.driveV) > 10;
+  if (b.phase === 'red' && b.t > 2.0 && pressing && p.invuln <= 0){
+    world.zapT = 0.35;
+    sfx('zap');
+    driveHit(DRIVE_DMG, b.x);
+    addFloater(p.x, p.y - 60, '⚡ Bei Rot anhalten!', '#ffd24a');
+  }
+  // Ampel erreicht = gewonnen
+  if (p.x + p.w >= b.x - 50){
+    p.x = b.x - 50 - p.w; p.driveV = 0;
+    hitBoss(b, b.hp);
+    return;
+  }
+  // Pfeil-Nachschub während des Kampfes
+  b.arrowT -= dt;
+  if (b.arrowT <= 0 && p.arrows < 5){
+    b.arrowT = 4;
+    const lane = Math.floor(rnd(0, 4));
+    world.pickups.push({ type: 'arrows', n: 3, x: clamp(p.x + rnd(150, 400), 0, b.x - 160), y: world.lanes[lane] - 11, w: 26, h: 22, t: 20 });
+  }
+}
+
+function updateDrive(dt){
+  const p = player;
+  p.animT += dt;
+  p.invuln = Math.max(0, p.invuln - dt);
+  p.attackT = 0;
+  p.bowCd = Math.max(0, p.bowCd - dt);
+  world.zapT = Math.max(0, world.zapT - dt);
+
+  // Gas / Bremse / Ausrollen / langsam rückwärts
+  const maxV = DRIVE_BASE * p.speedMult;
+  const bossActive = world.bosses[0] && world.bosses[0].active && !world.bosses[0].dead;
+  const coast = bossActive ? 1500 : 400;   // auf der Ampel-Zielgeraden bleibt das Auto beim Loslassen fast sofort stehen
+  if (inp.right) p.driveV = Math.min(maxV, p.driveV + 450 * dt);
+  else if (inp.left) p.driveV = p.driveV > 0 ? Math.max(0, p.driveV - 900 * dt) : Math.max(-DRIVE_REV, p.driveV - 300 * dt);
+  else p.driveV = p.driveV > 0 ? Math.max(0, p.driveV - coast * dt) : Math.min(0, p.driveV + coast * dt);
+  p.facing = 1;
+
+  // Spurwechsel – an Raststätten gibt es nur die Mittelspur
+  const seg = world.segments.find(s => p.x + p.w / 2 >= s.x0 && p.x + p.w / 2 < s.x1);
+  const inRest = seg && seg.type === 'rest';
+  if (inRest){
+    p.lane = 2;   // nach der Raststätte geht es auf der unteren Fahrtrichtungs-Spur weiter
+  } else {
+    if (inp.upP && p.lane > 0){ p.lane--; sfx('swing'); }
+    if (inp.downP && p.lane < world.lanes.length - 1){ p.lane++; sfx('swing'); }
+  }
+  const targetY = (inRest ? REST_Y : world.lanes[p.lane]) - p.h / 2;
+  p.y = lerp(p.y, targetY, 1 - Math.pow(0.0001, dt));
+
+  p.x += p.driveV * dt;
+  p.vx = p.driveV;
+  p.dist += p.driveV * dt;
+  p.x = clamp(p.x, 0, world.w - p.w);
+  const boss = world.bosses[0];
+  if (boss && p.x + p.w > boss.x - 50){ p.x = boss.x - 50 - p.w; p.driveV = Math.min(p.driveV, 0); }   // vor der Ampel ist Schluss
+
+  // Pfeile schießen (C / Y am Controller oder Leertaste / A)
+  if ((inp.bowP || inp.jumpBtnP) && p.bowCd <= 0){
+    if (p.arrows > 0){
+      p.arrows--; p.bowCd = 0.45;
+      world.arrows.push({ x: p.x + p.w + 6, y: p.y + p.h - 34, vx: 640 + p.driveV, t: 1.6 });   // auf Höhe der Motorhaube -> trifft Autos in derselben Spur
+      sfx('bow');
+    } else {
+      p.bowCd = 0.4;
+      sfx('wrong');
+      addFloater(p.x, p.y - 40, 'Keine Pfeile!', '#ff9a9a');
+    }
+  }
+
+  updateTraffic(dt);
+  if (boss) updateTrafficBoss(boss, dt);
+  if (world.winT != null){
+    world.winT -= dt;
+    if (world.winT <= 0){
+      world.winT = null;
+      state = 'win'; stateT = 0; banner = null;
+      sfx('fanfare');
+      speak('Fantastisch! Du hast alle sechs Welten geschafft! Du bist ein echter Held!');
+    }
+  }
+}
+
 // ---------- Laserschranken ----------
 function laserOn(l){ return ((gameT + l.offset) % l.period) < l.period * 0.5; }
 function laserBox(l){
@@ -1166,10 +1419,14 @@ function bossDrop(b){
     world.pickups.push({ type: 'key', x: cx0 - 18, y: b.groundY - 56, w: 36, h: 32, t: 999 });
     showBanner('🎉 ' + b.name + ' besiegt!', 'Er hat den Kristall-Schlüssel fallen gelassen!', 4);
     speak('Jaaa! Der ' + b.name + ' ist besiegt! Schnapp dir den Kristallschlüssel und öffne den Ausgang!');
+  } else if (b.drop === 'finish'){
+    showBanner('🏁 Ziel erreicht!', b.name + ' ist geschlagen!', 4);
+    speak('Jaaa! Du hast die Ampel erreicht! Der Ampelroboter ist geschlagen!');
+    world.winT = 4;
   } else if (b.drop === 'chip'){
     world.pickups.push({ type: 'chip', x: cx0 - 18, y: b.groundY - 56, w: 36, h: 32, t: 999 });
     showBanner('🎉 ' + b.name + ' besiegt!', 'Er hat den Geheim-Chip fallen gelassen!', 4);
-    speak('Jaaa! Der ' + b.name + ' ist besiegt! Schnapp dir den Geheimchip und öffne die Geheimtür!');
+    speak('Jaaa! Der ' + b.name + ' ist besiegt! Schnapp dir den Geheimchip, er ist der Zündschlüssel für dein neues Auto!');
   }
 }
 
@@ -1379,8 +1636,8 @@ function updateCoins(dt){
       pu.t = 0;
       player.hasChip = true;
       sfx('fanfare');
-      speak('Der Geheimchip! Mission fast geschafft! Klettere über die Mauer zur Geheimtür!');
-      showBanner('💾 Geheim-Chip!', 'Auf zur Geheimtür!', 3.5);
+      speak('Der Geheimchip! Mission fast geschafft! Klettere über die Mauer, dort steht dein neues Auto!');
+      showBanner('💾 Geheim-Chip!', 'Auf zum neuen Auto!', 3.5);
     }
   }
   world.pickups = world.pickups.filter(p => p.t > 0);
@@ -1389,9 +1646,14 @@ function updateCoins(dt){
 // ---------- Checkpoints, Truhen, Tür ----------
 function updateWorldObjects(dt){
   for (const f of world.flags){
-    if (!f.active && Math.abs(player.x + player.w / 2 - f.x) < 50 && Math.abs(player.y + player.h - f.y) < 60){
+    const nearY = world.mode === 'drive' || Math.abs(player.y + player.h - f.y) < 60;
+    if (!f.active && Math.abs(player.x + player.w / 2 - f.x) < 50 && nearY){
       f.active = true;
-      world.checkpoint = { x: f.x, y: f.y };
+      world.checkpoint = { x: f.x, y: f.y, lane: player.lane };
+      if (world.mode === 'drive'){
+        player.hearts = player.maxHearts; player.arrows = 10;
+        addFloater(f.x - 30, f.y - 130, '⛽ Aufgetankt: Herzen + Pfeile!', '#ffd24a');
+      }
       if (player.hasShield && player.shieldCharge < player.shieldMax){
         player.shieldCharge = player.shieldMax;
         addFloater(f.x, f.y - 80, '🛡️ aufgeladen!', '#7fd0ff');
@@ -1420,8 +1682,8 @@ function updateWorldObjects(dt){
             addFloater(world.door.x + 10, world.door.y - 30, '🗝️ Du brauchst den Schlüssel!', '#ffd24a');
             speak('Das Tor ist verschlossen! Du brauchst den Kristallschlüssel vom Höhlenkönig!');
           } else {
-            addFloater(world.door.x + 10, world.door.y - 30, '💾 Du brauchst den Geheim-Chip!', '#7fffd0');
-            speak('Die Geheimtür ist verschlossen! Du brauchst den Geheimchip vom Chef-Roboter!');
+            addFloater(world.door.x + 10, world.door.y - 60, '💾 Du brauchst den Geheim-Chip!', '#7fffd0');
+            speak('Das Auto braucht den Geheimchip als Zündschlüssel! Besiege den Chef-Roboter!');
           }
         }
       } else if (world.door.to){
@@ -1430,7 +1692,7 @@ function updateWorldObjects(dt){
       } else {
         state = 'win'; stateT = 0; banner = null;
         sfx('fanfare');
-        speak('Fantastisch! Du hast alle fünf Welten geschafft! Du bist ein echter Held!');
+        speak('Fantastisch! Du hast alle sechs Welten geschafft! Du bist ein echter Held!');
       }
     }
   }
@@ -1470,7 +1732,7 @@ function updateGlide(dt){
     if (next === 'win'){
       state = 'win'; stateT = 0; banner = null;
       sfx('fanfare');
-      speak('Fantastisch! Du hast alle fünf Welten geschafft! Du bist ein echter Held!');
+      speak('Fantastisch! Du hast alle sechs Welten geschafft! Du bist ein echter Held!');
     } else {
       loadWorld(next);
       state = 'play';
@@ -1803,6 +2065,15 @@ function drawFlag(f){
 function drawDoor(){
   const d = world.door;
   const x = d.x - camX, y = d.y - camY;
+  if (d.kind === 'car'){
+    ctx.fillStyle = 'rgba(255,255,160,' + (0.25 + Math.sin(gameT * 4) * 0.15) + ')';
+    ctx.beginPath(); ctx.ellipse(x + d.w / 2, y + d.h, 80, 30, 0, 0, 7); ctx.fill();
+    drawRoadCar(x + d.w / 2, y + d.h, { seat: -1 });
+    textOutline('🚗 ' + d.label, x + d.w / 2, y - 76, 17, '#fff');
+    if (d.needsChip && !player.hasChip)
+      textOutline('💾', x + d.w / 2 + 40, y - 40 + Math.sin(gameT * 3) * 4, 22);
+    return;
+  }
   const colors = ['#ff5f5f', '#ffb14a', '#ffe94a', '#6fdc6f', '#5fa8ff', '#b06fff'];
   colors.forEach((col, i) => {
     ctx.strokeStyle = col; ctx.lineWidth = 6;
@@ -2020,15 +2291,18 @@ function drawBossBody(b){
 function drawBosses(){
   let barBoss = null;
   for (const b of world.bosses){
+    if (b.dead && b.style !== 'light') continue;   // der Ampel-Roboter bleibt als Ziel stehen
+    if (b.style === 'light') drawTrafficBoss(b); else drawBossBody(b);
     if (b.dead) continue;
-    drawBossBody(b);
     if (b.active && (!barBoss || Math.abs(b.x - player.x) < Math.abs(barBoss.x - player.x))) barBoss = b;
   }
   if (barBoss){
     const bw = 300, bx = W / 2 - bw / 2;
-    ctx.fillStyle = 'rgba(0,0,0,.4)'; rrect(bx - 4, 46, bw + 8, 22, 10); ctx.fill();
-    ctx.fillStyle = '#ff5b6e'; rrect(bx, 50, bw * barBoss.hp / barBoss.maxHp, 14, 7); ctx.fill();
-    textOutline(barBoss.icon + ' ' + barBoss.name, W / 2, 34, 17);
+    // Boss-Leiste unten (oben ist Platz für viele Herzen nötig)
+    const by0 = H - 66;
+    ctx.fillStyle = 'rgba(0,0,0,.4)'; rrect(bx - 4, by0, bw + 8, 22, 10); ctx.fill();
+    ctx.fillStyle = '#ff5b6e'; rrect(bx, by0 + 4, bw * barBoss.hp / barBoss.maxHp, 14, 7); ctx.fill();
+    textOutline(barBoss.icon + ' ' + barBoss.name, W / 2, by0 - 14, 17);
   }
 }
 
@@ -2164,8 +2438,261 @@ function drawRoboCar(){
   ctx.restore();
 }
 
+function drawRoadCar(bx, by, o){
+  // Das Autobahn-Auto: langes rotes Auto mit Motorhaube, schräger Frontscheibe, Finne hinten,
+  // drei Fenstern (in einem sitzt die Spielfigur), Pfeilwerfer auf dem Dach und zwei großen Rädern.
+  // Ursprung: Mitte der Unterkante (Hitbox 120 x 52).
+  o = o || {};
+  ctx.save();
+  ctx.translate(bx, by);
+  const rot = o.wheelRot || 0;
+  for (const wx of [-38, 38]){
+    ctx.fillStyle = '#23272f'; ctx.beginPath(); ctx.arc(wx, -13, 13, 0, 7); ctx.fill();
+    ctx.fillStyle = '#9aa3b5'; ctx.beginPath(); ctx.arc(wx, -13, 7, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#4a5160'; ctx.lineWidth = 2;
+    for (let i = 0; i < 4; i++){
+      const a = rot + i * Math.PI / 2;
+      ctx.beginPath(); ctx.moveTo(wx, -13); ctx.lineTo(wx + Math.cos(a) * 11, -13 + Math.sin(a) * 11); ctx.stroke();
+    }
+  }
+  ctx.translate(0, o.bob || 0);
+  // Karosserie: Heck – Kofferraum – Kabine mit schräger Scheibe – Motorhaube – Front
+  ctx.fillStyle = '#e0463a';
+  ctx.beginPath();
+  ctx.moveTo(-60, -16); ctx.lineTo(-60, -38); ctx.quadraticCurveTo(-60, -46, -52, -46);
+  ctx.lineTo(-44, -46); ctx.lineTo(-36, -66); ctx.quadraticCurveTo(-34, -69, -30, -69);
+  ctx.lineTo(2, -69); ctx.quadraticCurveTo(8, -69, 12, -64); ctx.lineTo(26, -44);
+  ctx.lineTo(48, -42); ctx.quadraticCurveTo(60, -40, 60, -32); ctx.lineTo(60, -16); ctx.closePath(); ctx.fill();
+  // dunkle Schürze
+  ctx.fillStyle = '#a83027'; rrect(-58, -24, 116, 9, 3); ctx.fill();
+  // Finne hinten
+  ctx.fillStyle = '#e0463a';
+  ctx.beginPath(); ctx.moveTo(-42, -60); ctx.lineTo(-38, -84); ctx.lineTo(-28, -68); ctx.closePath(); ctx.fill();
+  // Drei Fenster (hinten, Mitte, vorne mit schräger Scheibe)
+  const wins = [-33, -12, 10];
+  ctx.fillStyle = '#bfe8ff';
+  ctx.beginPath(); ctx.moveTo(-41, -48); ctx.lineTo(-34, -64); ctx.lineTo(-26, -64); ctx.lineTo(-26, -48); ctx.closePath(); ctx.fill();
+  rrect(-22, -64, 20, 16, 4); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(2, -64); ctx.lineTo(2, -48); ctx.lineTo(22, -47); ctx.lineTo(10, -64); ctx.closePath(); ctx.fill();
+  // Kopf der Spielfigur im Fenster
+  if (o.seat >= 0){
+    const hx = wins[o.seat], hy = -55 + (o.headBob || 0);
+    ctx.fillStyle = '#ffd9b0'; ctx.beginPath(); ctx.arc(hx, hy, 7.5, 0, 7); ctx.fill();
+    ctx.fillStyle = '#7a4a22'; ctx.beginPath(); ctx.arc(hx, hy - 2.5, 7.5, Math.PI, 0); ctx.fill();
+    ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(hx - 2.5, hy, 1.4, 0, 7); ctx.arc(hx + 2.5, hy, 1.4, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#222'; ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(hx, hy + 2, 3.2, 0.2, Math.PI - 0.2); ctx.stroke();
+  }
+  // Türgriff + Linie
+  ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.fillRect(-24, -44, 2, 22); ctx.fillRect(0, -44, 2, 22);
+  ctx.fillStyle = '#ffd9b0'; ctx.fillRect(-18, -40, 8, 3); ctx.fillRect(6, -40, 8, 3);
+  // Pfeilwerfer auf der Motorhaube (schießt auf Spurhöhe)
+  ctx.fillStyle = '#23272f'; rrect(26, -56, 24, 13, 5); ctx.fill();
+  ctx.fillRect(48, -52, 14, 6);
+  ctx.fillStyle = '#aeb9c4';
+  ctx.beginPath(); ctx.moveTo(68, -49); ctx.lineTo(60, -54); ctx.lineTo(60, -44); ctx.closePath(); ctx.fill();
+  // Scheinwerfer, Kühlergrill, Rücklicht / Rückfahrlicht
+  ctx.fillStyle = '#fff3a0'; ctx.beginPath(); ctx.arc(56, -34, 4.5, 0, 7); ctx.fill();
+  ctx.fillStyle = '#23272f'; rrect(50, -28, 10, 6, 2); ctx.fill();
+  ctx.fillStyle = o.reverse ? '#ffffff' : '#ff6b6b'; ctx.fillRect(-60, -40, 5, 9);
+  ctx.restore();
+}
+
+function drawPlayerRoadCar(){
+  const p = player;
+  ctx.save();
+  if (p.invuln > 0 && Math.floor(p.invuln * 14) % 2 === 0) ctx.globalAlpha = 0.35;
+  const moving = Math.abs(p.driveV) > 20;
+  drawRoadCar(p.x + p.w / 2 - camX, p.y + p.h - camY, {
+    seat: p.seat, wheelRot: p.dist / 14, reverse: p.driveV < -5,
+    bob: moving ? Math.sin(p.animT * 30) * 1.2 : 0,
+    headBob: moving ? Math.sin(p.animT * 12) * 1.5 : 0,
+  });
+  ctx.restore();
+}
+
+function drawTrafficCar(c){
+  const x = c.x - camX, y = c.y - camY;
+  if (x + c.w < -20 || x > W + 20) return;
+  const dir = c.vx < 0 ? -1 : 1;
+  ctx.save();
+  ctx.translate(x + c.w / 2, y + c.h);
+  ctx.scale(dir, 1);
+  const hw = c.w / 2;
+  for (const wx of [-hw + 18, hw - 18]){
+    ctx.fillStyle = '#23272f'; ctx.beginPath(); ctx.arc(wx, -10, 10, 0, 7); ctx.fill();
+    ctx.fillStyle = '#9aa3b5'; ctx.beginPath(); ctx.arc(wx, -10, 4.5, 0, 7); ctx.fill();
+  }
+  if (c.type === 'truck'){
+    ctx.fillStyle = c.color; rrect(-hw, -c.h, c.w * 0.62, c.h - 8, 6); ctx.fill();
+    ctx.fillStyle = '#d9dde6'; rrect(hw - c.w * 0.34, -c.h + 12, c.w * 0.34, c.h - 20, 6); ctx.fill();
+    ctx.fillStyle = '#bfe8ff'; rrect(hw - c.w * 0.3, -c.h + 16, c.w * 0.18, 14, 4); ctx.fill();
+  } else {
+    ctx.fillStyle = c.color; rrect(-hw, -c.h + 14, c.w, c.h - 22, 8); ctx.fill();
+    rrect(-hw * 0.6, -c.h, hw * 1.15, 18, 7); ctx.fill();
+    ctx.fillStyle = '#bfe8ff'; rrect(-hw * 0.5, -c.h + 3, hw * 0.45, 12, 4); ctx.fill(); rrect(hw * 0.02, -c.h + 3, hw * 0.45, 12, 4); ctx.fill();
+  }
+  ctx.fillStyle = '#fff3a0'; ctx.beginPath(); ctx.arc(hw - 3, -c.h * 0.45, 4, 0, 7); ctx.fill();
+  ctx.fillStyle = '#ff6b6b'; ctx.fillRect(-hw, -c.h * 0.5, 4, 8);
+  ctx.restore();
+}
+
+function drawTrafficBoss(b){
+  const x = b.x - camX, y = b.y - camY;
+  if (x + b.w < -60 || x > W + 60) return;
+  const lit = (ph) => b.dead ? ph === 'green' : (b.active && b.phase === ph);
+  // Standfuß
+  ctx.fillStyle = '#3a4152'; rrect(x + 30, y + 200, 60, 70, 8); ctx.fill();
+  // Ampelgehäuse
+  ctx.fillStyle = '#23272f'; rrect(x + 10, y + 40, 100, 170, 16); ctx.fill();
+  const lamps = [['red', '#ff3b3b', '#5a1a1a', 78], ['yellow', '#ffd23b', '#5a4a12', 128], ['green', '#3bea6a', '#124a22', 178]];
+  for (const [ph, on, off, ly] of lamps){
+    if (lit(ph)){
+      ctx.fillStyle = 'rgba(255,255,255,.12)';
+      ctx.beginPath(); ctx.arc(x + 60, y + ly, 32, 0, 7); ctx.fill();
+    }
+    ctx.fillStyle = lit(ph) ? on : off;
+    ctx.beginPath(); ctx.arc(x + 60, y + ly, 21, 0, 7); ctx.fill();
+  }
+  // Kopf
+  ctx.fillStyle = b.flash > 0 ? '#fff' : '#8e97a8'; rrect(x + 20, y - 14, 80, 56, 12); ctx.fill();
+  ctx.fillStyle = '#1c2230'; rrect(x + 30, y + 2, 60, 18, 6); ctx.fill();
+  ctx.fillStyle = lit('red') ? '#ff3b3b' : '#3bea6a';
+  ctx.beginPath(); ctx.arc(x + 45, y + 11, 5, 0, 7); ctx.arc(x + 75, y + 11, 5, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#1c2230'; ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (lit('red')) ctx.arc(x + 60, y + 34, 8, Math.PI + 0.3, -0.3); else ctx.arc(x + 60, y + 26, 8, 0.3, Math.PI - 0.3);
+  ctx.stroke();
+  // Antenne
+  ctx.strokeStyle = '#c3cce4'; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(x + 60, y - 14); ctx.lineTo(x + 60, y - 40); ctx.stroke();
+  ctx.fillStyle = Math.floor(gameT * 5) % 2 ? '#ff4a4a' : '#ffb14a';
+  ctx.beginPath(); ctx.arc(x + 60, y - 44, 6, 0, 7); ctx.fill();
+  // Arme: bei Rot Stopp-Hand zum Spieler
+  ctx.strokeStyle = '#3a4152'; ctx.lineWidth = 8; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(x + 12, y + 90); ctx.lineTo(x - 20, lit('red') ? y + 60 : y + 130); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + 108, y + 90); ctx.lineTo(x + 140, y + 130); ctx.stroke();
+  if (lit('red')) textOutline('✋', x - 22, y + 44, 34);
+  if (lit('green')) textOutline('👉', x - 26, y + 130, 30);
+}
+
+function drawDriveWorld(){
+  // Himmel
+  const g = ctx.createLinearGradient(0, 0, 0, 200);
+  g.addColorStop(0, '#5db9f0'); g.addColorStop(1, '#c9ebfb');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, 200);
+  ctx.fillStyle = 'rgba(255,235,130,.9)';
+  ctx.beginPath(); ctx.arc(830 - camX * 0.02, 60, 40, 0, 7); ctx.fill();
+  for (const d of world.decor){
+    if (d.kind === 'cloud'){
+      d.x -= d.spd * 0.016; if (d.x < -120) d.x = world.w + 100;
+      const sx = d.x - camX * 0.3;
+      if (sx > -150 && sx < W + 150){ ctx.fillStyle = 'rgba(255,255,255,.8)'; drawCloudShape(sx, d.y, d.s); }
+    } else if (d.kind === 'hill'){
+      const sx = d.x - camX * 0.2;
+      if (sx > -300 && sx < W + 300){
+        ctx.fillStyle = d.hue;
+        ctx.beginPath(); ctx.ellipse(sx, 175, 170 * d.s, 60 * d.s, 0, Math.PI, 0); ctx.fill();
+      }
+    }
+  }
+  // Wiese
+  ctx.fillStyle = '#6cb85a'; ctx.fillRect(0, 160, W, 40);
+  ctx.fillStyle = '#5aa64a'; ctx.fillRect(0, 440, W, H - 440);
+  // Bäume (oben hinter der Leitplanke, unten vor der Wiese)
+  for (const d of world.decor){
+    if (d.kind !== 'tree6') continue;
+    const sx = d.x - camX * (d.top ? 0.6 : 1), base = d.top ? 168 : 520;
+    if (sx < -60 || sx > W + 60) continue;
+    ctx.fillStyle = '#7a5c3a'; ctx.fillRect(sx - 4 * d.s, base - 40 * d.s, 8 * d.s, 40 * d.s);
+    ctx.fillStyle = d.top ? '#4f8f42' : '#3f7f36';
+    ctx.beginPath(); ctx.arc(sx, base - 52 * d.s, 26 * d.s, 0, 7); ctx.fill();
+  }
+  // Straße
+  ctx.fillStyle = '#3b3f4a'; ctx.fillRect(0, 200, W, 240);
+  // Raststätten (hellere Fläche + Gebäude)
+  for (const s of world.segments){
+    if (s.type !== 'rest') continue;
+    const sx0 = s.x0 - camX, sx1 = s.x1 - camX;
+    if (sx1 < 0 || sx0 > W) continue;
+    const mx = (sx0 + sx1) / 2;
+    // Außenspuren gesperrt: Beton mit rot-weißen Baken, Trichter an Ein- und Ausfahrt
+    ctx.fillStyle = '#8892a8';
+    ctx.beginPath(); ctx.moveTo(sx0 - 140, 200); ctx.lineTo(sx1 + 140, 200); ctx.lineTo(sx1, REST_Y - 34); ctx.lineTo(sx0, REST_Y - 34); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(sx0 - 140, 440); ctx.lineTo(sx1 + 140, 440); ctx.lineTo(sx1, REST_Y + 34); ctx.lineTo(sx0, REST_Y + 34); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#5b6577'; ctx.fillRect(sx0, REST_Y - 34, sx1 - sx0, 68);
+    for (let px = sx0 - 120; px < sx1 + 120; px += 40){
+      const inFunnel = px < sx0 || px > sx1;
+      const t = inFunnel ? (px < sx0 ? (px - (sx0 - 140)) / 140 : ((sx1 + 140) - px) / 140) : 1;
+      const yTop = 200 + (REST_Y - 34 - 200) * t - 8, yBot = 440 - (440 - REST_Y - 34) * t + 2;
+      ctx.fillStyle = Math.floor(px / 40) % 2 ? '#ff5f5f' : '#fff';
+      ctx.fillRect(px, yTop, 14, 8); ctx.fillRect(px, yBot, 14, 8);
+    }
+    ctx.fillStyle = '#f2d08a'; rrect(mx - 80, 108, 160, 56, 8); ctx.fill();
+    ctx.fillStyle = '#c0504d'; ctx.beginPath(); ctx.moveTo(mx - 90, 110); ctx.lineTo(mx, 78); ctx.lineTo(mx + 90, 110); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#7fb2ff'; rrect(mx - 60, 122, 30, 26, 4); ctx.fill(); rrect(mx + 30, 122, 30, 26, 4); ctx.fill();
+    ctx.fillStyle = '#7a4a22'; rrect(mx - 12, 128, 24, 36, 4); ctx.fill();
+    textOutline('🍔 Raststätte', mx, 62, 18);
+    textOutline('🅿️ sicher!', mx, 224, 16, '#bfe8ff');
+  }
+  // Fahrbahnmarkierungen
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 202, W, 3); ctx.fillRect(0, 435, W, 3);
+  const off = -(camX % 70);
+  for (const ly of [260, 380]) for (let x = off - 70; x < W; x += 70) ctx.fillRect(x, ly - 2, 40, 4);
+  ctx.fillStyle = '#ffd24a'; ctx.fillRect(0, 316, W, 3); ctx.fillRect(0, 322, W, 3);
+  // Leitplanken
+  ctx.fillStyle = '#c3cce4'; ctx.fillRect(0, 190, W, 6); ctx.fillRect(0, 446, W, 6);
+  ctx.fillStyle = '#8892a8';
+  for (let x = off - 70; x < W; x += 70){ ctx.fillRect(x + 10, 190, 5, 12); ctx.fillRect(x + 10, 446, 5, 12); }
+  // Schilder
+  for (const d of world.decor){
+    if (d.kind !== 'sign') continue;
+    const sx = d.x - camX;
+    if (sx < -120 || sx > W + 120) continue;
+    ctx.fillStyle = '#8892a8'; ctx.fillRect(sx - 3, 130, 6, 60);
+    ctx.fillStyle = '#2f6fd6'; rrect(sx - 70, 108, 140, 34, 6); ctx.fill();
+    text(d.text, sx, 125, 16, '#fff');
+  }
+
+  for (const f of world.flags) drawFlag(f);
+  for (const c of world.chests) drawChest(c);
+  drawPickups();
+  for (const c of world.traffic) drawTrafficCar(c);
+  drawBosses();
+  drawArrows();
+  drawPlayer();
+  // Ampel-Blitz
+  if (world.zapT > 0 && world.bosses[0]){
+    const b = world.bosses[0];
+    const x0 = b.x + 60 - camX, y0 = b.y + 78 - camY, x1 = player.x + player.w / 2 - camX, y1 = player.y - camY;
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(x0, y0);
+    for (let i = 1; i < 6; i++) ctx.lineTo(lerp(x0, x1, i / 6) + rnd(-18, 18), lerp(y0, y1, i / 6) + rnd(-18, 18));
+    ctx.lineTo(x1, y1); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,240,120,.7)'; ctx.lineWidth = 10; ctx.stroke();
+  }
+  drawFx();
+  // Ampel-Ansage groß in der Mitte
+  const b = world.bosses[0];
+  if (b && b.active && !b.dead){
+    const t = b.phase === 'red' ? '🔴 STOPP!' : b.phase === 'yellow' ? '🟡 Gleich Rot!' : '🟢 LOS!';
+    textOutline(t, W / 2, 96, 34, b.phase === 'red' ? '#ff6b6b' : b.phase === 'yellow' ? '#ffd24a' : '#7be07b');
+    const restM = Math.max(0, Math.round((b.x - 50 - player.x - player.w) / 10));
+    textOutline('🚦 noch ' + restM + ' m', W / 2, 132, 18, '#fff');
+    // Fortschrittsbalken zur Ampel
+    const prog = clamp((player.x - b.startX) / (b.x - 50 - player.w - b.startX), 0, 1);
+    ctx.fillStyle = 'rgba(0,0,0,.35)'; rrect(W / 2 - 150, 146, 300, 12, 6); ctx.fill();
+    ctx.fillStyle = '#7be07b'; rrect(W / 2 - 148, 148, 296 * prog, 8, 4); ctx.fill();
+    textOutline('🚗', W / 2 - 150 + 300 * prog, 152, 16);
+  }
+  drawHUD();
+  drawBanner();
+}
+
 function drawPlayer(){
   if (player.form === 'car'){ drawRoboCar(); return; }
+  if (player.form === 'roadcar'){ drawPlayerRoadCar(); return; }
   const p = player;
   const x = p.x - camX, y = p.y - camY;
   ctx.save();
@@ -2288,13 +2815,20 @@ function drawHUD(){
     for (let i = 0; i < player.shieldMax; i++)
       textOutline(i < player.shieldCharge ? '🛡️' : '⬜', 30 + (player.maxHearts + i) * 30 + 10, 28, 22);
   }
-  // Schwert-Anzeige
-  const s = SWORDS[player.sword];
-  ctx.fillStyle = 'rgba(0,0,0,.3)';
-  rrect(14, 46, 170, 30, 10); ctx.fill();
-  ctx.save();
-  ctx.translate(36, 68); ctx.rotate(0.8); drawSword(player.sword, 20); ctx.restore();
-  text(s.name, 52, 61, 14, '#fff', 'left');
+  if (world.mode === 'drive'){
+    // Tempo-Anzeige statt Schwert
+    ctx.fillStyle = 'rgba(0,0,0,.3)';
+    rrect(14, 46, 190, 30, 10); ctx.fill();
+    text('🚗 Tempo ' + Math.round(player.speedMult * 100) + ' %', 24, 61, 14, '#fff', 'left');
+  } else {
+    // Schwert-Anzeige
+    const s = SWORDS[player.sword];
+    ctx.fillStyle = 'rgba(0,0,0,.3)';
+    rrect(14, 46, 170, 30, 10); ctx.fill();
+    ctx.save();
+    ctx.translate(36, 68); ctx.rotate(0.8); drawSword(player.sword, 20); ctx.restore();
+    text(s.name, 52, 61, 14, '#fff', 'left');
+  }
   // Bogen: Köcher mit bis zu 10 Pfeilen nebeneinander
   if (player.hasBow){
     ctx.fillStyle = 'rgba(0,0,0,.3)';
@@ -2321,6 +2855,10 @@ function drawHUD(){
     ctx.fillStyle = 'rgba(0,0,0,.35)';
     rrect(W / 2 - 270, H - 32, 540, 24, 10); ctx.fill();
     text('🧗 An der Wand: ↑ ↓ klettern · Leertaste / A: abspringen · X: Kopfschwert', W / 2, H - 20, 13, '#fff');
+  } else if (player.form === 'roadcar'){
+    ctx.fillStyle = 'rgba(0,0,0,.35)';
+    rrect(W / 2 - 270, H - 32, 540, 24, 10); ctx.fill();
+    text('🚗 ↑ ↓ Spur wechseln · → Gas · ← Bremse / Rückwärts · C / Leertaste: Pfeile · X: Truhe', W / 2, H - 20, 13, '#fff');
   }
   // Test-Tasten
   text('F5 ◀ Welt ▶ F6', W - 14, H - 12, 11, 'rgba(255,255,255,.45)', 'right');
@@ -2427,10 +2965,11 @@ function drawQuiz(){
     ctx.fillStyle = '#5fa8ff'; rrect(W / 2 - 197, cy + ch - 93, 394 * frac, 16, 8); ctx.fill();
     text('Gleich werden die Karten umgedreht…', W / 2, cy + ch - 44, 17, '#8a94a8');
   } else {
-    const n = q.options.length, cols = n === 6 ? 3 : 2;
-    const bw2 = n === 6 ? 170 : 200, bh = 74, gapX = 22, gapY = 14;
+    const n = q.options.length, cols = quizCols(n), rows = Math.ceil(n / cols);
+    const many = cols === 4;
+    const bw2 = many ? 150 : n === 6 ? 170 : 200, bh = many ? 56 : 74, gapX = many ? 16 : 22, gapY = many ? 10 : 14;
     const gridW = cols * bw2 + (cols - 1) * gapX;
-    const x0 = W / 2 - gridW / 2, y0 = cy + ch - 2 * bh - gapY - 58;
+    const x0 = W / 2 - gridW / 2, y0 = cy + ch - rows * bh - (rows - 1) * gapY - 58;
     const locked = quiz.awaitSpeech || quiz.minT > 0;
     const penalty = quiz.penaltyT > 0 || quiz.penaltySpeech;
     for (let i = 0; i < n; i++){
@@ -2445,14 +2984,14 @@ function drawQuiz(){
         rrect(bx - 3, by - 3, bw2 + 6, bh + 6, 18); ctx.stroke();
         textOutline('👉', bx - 22, by + bh / 2, 22);
       }
-      text(q.options[i], bx + bw2 / 2, by + bh / 2 + 1, 34, sel ? '#7a4a00' : '#33415c');
+      text(q.options[i], bx + bw2 / 2, by + bh / 2 + 1, many ? 26 : 34, sel ? '#7a4a00' : '#33415c');
       ctx.globalAlpha = 1;
     }
     if (penalty){
-      textOutline('🤔', W / 2, y0 + bh + gapY / 2, 36);
+      textOutline('🤔', W / 2, y0 + rows / 2 * (bh + gapY) - gapY / 2, 36);
       text('Denk nochmal in Ruhe nach…', W / 2, cy + ch - 20, 17, '#c96a1e');
     } else if (locked){
-      textOutline('👂', W / 2, y0 + bh + gapY / 2, 36);
+      textOutline('👂', W / 2, y0 + rows / 2 * (bh + gapY) - gapY / 2, 36);
       text('Erst gut zuhören!', W / 2, cy + ch - 20, 17, '#8a94a8');
     } else if (quiz.sel < 0){
       text('Wähle mit den Pfeilen eine Antwort aus!', W / 2, cy + ch - 20, 16, '#8a94a8');
@@ -2572,6 +3111,7 @@ function drawTitle(){
   const save = { x: player.x, y: player.y, cx: camX, cy: camY, form: player.form, w: player.w, h: player.h };
   player.form = 'hero'; player.w = 32; player.h = 44;
   ctx.translate(-player.w / 2, -player.h);
+  // (Form/Größe werden unten wiederhergestellt)
   player.x = 0; player.y = 0; camX = 0; camY = 0;
   drawPlayer();
   player.x = save.x; player.y = save.y; camX = save.cx; camY = save.cy;
@@ -2604,17 +3144,18 @@ function drawWin(){
     text(['🎉','⭐','🎊','✨'][i % 4], fx, fy, 20 + i % 3 * 8);
   }
   textOutline('GESCHAFFT! 🏆', W / 2, 130, 64, '#ffd24a');
-  text('Du hast alle fünf Welten gemeistert!', W / 2, 200, 26, '#fff');
+  text('Du hast alle sechs Welten gemeistert!', W / 2, 200, 26, '#fff');
   const s = SWORDS[player.sword];
   text('🪙 ' + stats.coins + ' Münzen      👾 ' + stats.kills + ' Monster besiegt', W / 2, 270, 24, '#fff');
   text('⚔️ ' + s.name + (player.hasBow ? '  ·  🏹 Bogen' : '') + '      ❤️ ' + player.maxHearts + ' Herzen', W / 2, 310, 24, '#fff');
-  text('Welt 6 kommt bald… 🌊', W / 2, 380, 22, '#7fd0ff');
+  text('Welt 7 kommt bald… 🌊', W / 2, 380, 22, '#7fd0ff');
   if (stateT > 1.5 && Math.floor(gameT * 1.4) % 2 === 0)
     textOutline('Knopf drücken für nochmal!', W / 2, 460, 24);
 }
 
 // ---------- Welt rendern ----------
 function drawWorld(){
+  if (world.mode === 'drive'){ drawDriveWorld(); return; }
   drawBackground();
   for (const pl of world.platforms) drawPlatform(pl);
   for (const wl of (world.walls || [])) drawWall(wl);
@@ -2682,18 +3223,30 @@ function loop(now){
     drawTitle();
   }
   else if (state === 'play'){
-    updatePlayer(dt);
-    if (state === 'play'){
-      updateEnemies(dt);
-      updateBosses(dt);
-      updateArrows(dt);
-      updateShocks(dt);
-      updateLasers();
-      updateCoins(dt);
-      updateWorldObjects(dt);
+    if (world.mode === 'drive'){
+      updateDrive(dt);
+      if (state === 'play'){
+        updateDriveArrows(dt);
+        updateCoins(dt);
+        updateWorldObjects(dt);
+      }
+    } else {
+      updatePlayer(dt);
+      if (state === 'play'){
+        updateEnemies(dt);
+        updateBosses(dt);
+        updateArrows(dt);
+        updateShocks(dt);
+        updateLasers();
+        updateCoins(dt);
+        updateWorldObjects(dt);
+      }
     }
     updateFx(dt);
-    if (world){
+    if (world && world.mode === 'drive'){
+      camX = lerp(camX, clamp(player.x - W * 0.3, 0, world.w - W), 1 - Math.pow(0.001, dt));
+      camY = 0;
+    } else if (world){
       camX = lerp(camX, clamp(player.x + player.w / 2 - W / 2, 0, world.w - W), 1 - Math.pow(0.001, dt));
       camY = lerp(camY, clamp(player.y - H * 0.55, world.top, world.killY - H + 100), 1 - Math.pow(0.001, dt));
     }
