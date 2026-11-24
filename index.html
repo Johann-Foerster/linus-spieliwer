@@ -12,6 +12,7 @@
 </head>
 <body>
 <canvas id="game" width="960" height="540"></canvas>
+<script src="audio/texte.js"></script>
 <script>
 'use strict';
 // ============================================================
@@ -573,25 +574,40 @@ function setWind(on){
 }
 
 // ---------- Sprachausgabe ----------
-let speechActive = false, speechId = 0;
+const voiceClips = new Map(speechTexts.map((text, i) =>
+  [text, 'audio/' + String(i).padStart(3, '0') + '.mp3']));
+let currentSpeech = null;
 function speak(text, onDone){
-  let called = false;
-  const id = ++speechId;
-  const finish = () => { if (id === speechId) speechActive = false; if (!called){ called = true; if (onDone) onDone(); } };
-  try {
-    if (!('speechSynthesis' in window)){ finish(); return; }
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = 'de-DE'; u.rate = 0.95; u.pitch = 1.1;
-    u.onend = finish; u.onerror = finish;
-    speechActive = true;
-    speechSynthesis.speak(u);
-  } catch(e){ finish(); }
+  if (currentSpeech) currentSpeech.stop();
+  const queue = [];
+  for (const prefix of ['Los geht das Abenteuer!', 'Hier kommt eine neue Frage!', 'Kopfrechnen!']){
+    if (text.startsWith(prefix + ' ')){
+      queue.push(prefix);
+      text = text.slice(prefix.length + 1);
+    }
+  }
+  queue.push(text);
+  const audio = new Audio();
+  const playback = { stop };
+  currentSpeech = playback;
+  function stop(){
+    if (currentSpeech !== playback) return;
+    currentSpeech = null;
+    audio.onended = audio.onerror = null;
+    audio.pause();
+    if (onDone) onDone();
+  }
+  function next(){
+    const file = voiceClips.get(queue.shift());
+    if (!file){ stop(); return; }
+    audio.src = file;
+    audio.play().catch(stop);
+  }
+  audio.onended = () => queue.length ? next() : stop();
+  audio.onerror = stop;
+  next();
 }
-function isSpeaking(){
-  try { return speechActive || ('speechSynthesis' in window && speechSynthesis.speaking); } catch (e) { return false; }
-}
-
+function isSpeaking(){ return currentSpeech !== null; }
 // ---------- Input (Tastatur + Gamepad) ----------
 const keys = {}, pressedKeys = {};
 addEventListener('keydown', e => {
@@ -1153,7 +1169,7 @@ function debugJumpWorld(delta){
   addFloater(player.x - 20, player.y - 40, '🛠️ Test: Welt ' + target, '#ffd24a');
 }
 
-function loadWorld(n){
+function loadWorld(n, intro = ''){
   worldNum = n;
   world = n === 1 ? buildWorld1() : n === 2 ? buildWorld2() : n === 3 ? buildWorld3() : n === 4 ? buildWorld4() : n === 5 ? buildWorld5() : buildWorld6();
   setForm(world.form || 'hero');
@@ -1181,7 +1197,7 @@ function loadWorld(n){
     6: ['Weiche den anderen Autos aus!', 'Welt sechs: Die Autobahn! Du sitzt jetzt in deinem neuen Auto! Gib mit ' + (padConnected ? 'dem Steuerkreuz nach rechts' : 'der rechten Pfeiltaste') + ' Gas, wechsle mit Hoch und Runter die Spur und weiche den anderen Autos aus! Mit ' + (padConnected ? padButtonSpeech('top') + ' oder ' + padButtonSpeech('bottom') : 'C oder der Leertaste') + ' schießt du Pfeile. Vorsicht: Ein Zusammenstoß kostet acht Herzen!'],
   };
   showBanner(world.name, subs[n][0], 3.5);
-  speak(subs[n][1]);
+  speak(intro + subs[n][1]);
   startTransition('in');
 }
 
@@ -7138,10 +7154,9 @@ function buildSongs(){
 function startGame(){
   resetPlayerStats();
   particles = []; floaters = []; banner = null; quiz = null; glide = null;
-  loadWorld(1);
+  loadWorld(1, 'Los geht das Abenteuer! ');
   state = 'play'; stateT = 0;
   sfx('start');
-  speak('Los geht das Abenteuer!');
 }
 
 // Grafik-Effekte am Helden mitverfolgen (Landestaub, Treffer-Pose, Schuss-Pose …) – ändert nichts am Spiel
