@@ -621,10 +621,17 @@ addEventListener('keyup', e => { keys[e.code] = false; });
 addEventListener('pointerdown', () => initAudio());
 
 // Controller: Browser melden ein Gamepad erst nach dem ersten Knopfdruck.
-// padConnected = gerade ein Controller verbunden → Anzeigen zeigen NUR Controller-Knöpfe, sonst NUR Tasten.
-let padConnected = false, padName = '', padType = 'xbox';
+// Während der Runde richten sich die Steuerungshinweise nach dem gewählten Controller.
+let padConnected = false, padType = 'xbox';
+let activePadIndex = null;
+let prevPadA = new Set();
 let prevPadButtons = [];
-addEventListener('gamepadconnected', e => { padName = e.gamepad.id; initAudio(); });
+let prevPadAx = 0, prevPadAy = 0;
+addEventListener('gamepadconnected', () => initAudio());
+addEventListener('gamepaddisconnected', e => {
+  prevPadA.delete(e.gamepad.index);
+  if (activePadIndex === e.gamepad.index) activePadIndex = null;
+});
 
 function detectPadType(id){
   const s = (id || '').toLowerCase();
@@ -663,10 +670,18 @@ function pollInput(){
   let quizConfirmP = pressedKeys['Space'];
 
   const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-  let found = null;
+  const pressedPadA = new Set();
+  inp.startPad = null;
   for (const gp of pads){
-    if (!gp || gp.connected === false) continue;
-    found = gp;
+    if (!gp || gp.connected === false || !gp.buttons[0]?.pressed) continue;
+    pressedPadA.add(gp.index);
+    if (state === 'title' && !inp.startPad && !prevPadA.has(gp.index)) inp.startPad = gp;
+  }
+  prevPadA = pressedPadA;
+
+  const gp = state !== 'title' && activePadIndex !== null ? pads[activePadIndex] : null;
+  padConnected = !!gp && gp.connected !== false;
+  if (padConnected){
     const ax = gp.axes[0] || 0, ay = gp.axes[1] || 0;
     const b = i => gp.buttons[i] && gp.buttons[i].pressed;
     const bp = i => (gp.buttons[i] && gp.buttons[i].pressed) && !prevPadButtons[i];
@@ -689,20 +704,16 @@ function pollInput(){
     if (bp(8) || bp(9)) escP = true;
 
     // Stick-Flanken für Menü-Navigation (horizontal + vertikal)
-    if (ax < -0.5 && !(inp._prevAx < -0.5)) leftP = true;
-    if (ax >  0.5 && !(inp._prevAx >  0.5)) rightP = true;
-    if (ay < -0.5 && !(inp._prevAy < -0.5)) upP = true;
-    if (ay >  0.5 && !(inp._prevAy >  0.5)) downP = true;
-    inp._prevAx = ax;
-    inp._prevAy = ay;
+    if (ax < -0.5 && !(prevPadAx < -0.5)) leftP = true;
+    if (ax >  0.5 && !(prevPadAx >  0.5)) rightP = true;
+    if (ay < -0.5 && !(prevPadAy < -0.5)) upP = true;
+    if (ay >  0.5 && !(prevPadAy >  0.5)) downP = true;
+    prevPadAx = ax;
+    prevPadAy = ay;
 
     prevPadButtons = gp.buttons.map(x => x.pressed);
     if (jump || atk) initAudio();
-    break;
   }
-  padConnected = !!found;
-  if (found && found.id !== padName){ padName = found.id; }
-  if (found) padType = detectPadType(found.id);
 
   inp.left = left; inp.right = right; inp.up = up; inp.down = down;
   inp.jump = jump; inp.atk = atk; inp.bow = bowHeld;
@@ -7151,7 +7162,16 @@ function buildSongs(){
 // ============================================================
 //  HAUPTSCHLEIFE
 // ============================================================
-function startGame(){
+function startGame(pad){
+  activePadIndex = pad ? pad.index : null;
+  padConnected = !!pad;
+  if (pad){
+    padType = detectPadType(pad.id);
+    prevPadButtons = pad.buttons.map(button => button.pressed);
+    prevPadAx = pad.axes[0] || 0;
+    prevPadAy = pad.axes[1] || 0;
+    initAudio();
+  }
   resetPlayerStats();
   particles = []; floaters = []; banner = null; quiz = null; glide = null;
   loadWorld(1, 'Los geht das Abenteuer! ');
@@ -7250,7 +7270,7 @@ function loop(now){
   else if (pressedKeys['F6']) debugJumpWorld(1);
 
   if (state === 'title'){
-    if (inp.confirmP || pressedKeys['KeyA']) startGame();   // „Drücke A“: Controller-A oder Taste A
+    if (inp.startPad || inp.confirmP || pressedKeys['KeyA']) startGame(inp.startPad);
   }
   else if (state === 'play'){
     if (world.mode === 'drive'){
